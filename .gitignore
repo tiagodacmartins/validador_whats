@@ -1,1 +1,10 @@
 node_modules/
+dist/
+
+# Credenciais e configurações sensíveis
+credentials.json
+db-config.json
+
+# Dados de sessão e cache do WhatsApp Web.js
+.wwebjs_auth/
+.wwebjs_cache/
