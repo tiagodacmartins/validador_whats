@@ -1,0 +1,60 @@
+{
+  "name": "whatsapp-validator-gui",
+  "version": "1.1.0",
+  "description": "Validador de WhatsApp com interface gráfica, delay aleatório, lotes e suporte a TXT delimitado por ;",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "node build/make-dist.js"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "googleapis": "^144.0.0",
+    "pg": "^8.20.0",
+    "qrcode": "^1.5.4",
+    "whatsapp-web.js": "^1.34.1"
+  },
+  "devDependencies": {
+    "electron": "^35.1.4",
+    "electron-builder": "^25.1.8",
+    "electron-packager": "^17.1.2"
+  },
+  "build": {
+    "appId": "com.validador.whatsapp",
+    "productName": "Validador WhatsApp",
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/whatsapp-web.js/**",
+      "node_modules/puppeteer-core/**",
+      "node_modules/@puppeteer/**"
+    ],
+    "files": [
+      "main.js",
+      "preload.js",
+      "whatsapp-validator-gui.html",
+      "node_modules/**"
+    ],
+    "extraResources": [],
+    "win": {
+      "target": [
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "signingHashAlgorithms": null,
+      "sign": null
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Validador WhatsApp"
+    }
+  }
+}

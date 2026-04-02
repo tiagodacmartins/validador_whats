@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Banco de Telefones</title>
+  <style>
+    :root {
+      --bg: #f4f7f8;
+      --panel: #ffffff;
+      --panel-2: #f8fbfb;
+      --text: #17313a;
+      --muted: #667b82;
+      --primary: #0d8f7a;
+      --primary-2: #0b6b5b;
+      --border: #d8e3e6;
+      --success-bg: #e8f8ef;
+      --success-fg: #18794e;
+      --error-bg: #fdecec;
+      --error-fg: #b42318;
+      --warn-bg: #fff7e6;
+      --warn-fg: #9a6700;
+      --shadow: 0 10px 30px rgba(13,45,51,.08);
+      --radius: 14px;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Segoe UI, Arial, sans-serif; background: var(--bg); color: var(--text); }
+    .app { max-width: 1100px; margin: 0 auto; padding: 18px; }
+    .hero {
+      background: linear-gradient(135deg, #146a76, #0d8f7a);
+      color: white; border-radius: 18px; padding: 20px 24px;
+      box-shadow: var(--shadow); margin-bottom: 18px;
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    }
+    .hero h1 { margin: 0; font-size: 22px; }
+    .card {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px;
+    }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    label { font-size: 13px; color: var(--muted); font-weight: 600; }
+    input[type="text"] {
+      border: 1px solid var(--border); border-radius: 10px; padding: 11px 12px;
+      background: var(--panel-2); color: var(--text); font-size: 14px; outline: none;
+    }
+    input:focus { border-color: var(--primary); }
+    .btn { border: 0; border-radius: 10px; padding: 11px 14px; font-size: 14px; font-weight: 700; cursor: pointer; }
+    .btn-primary { background: var(--primary); color: white; }
+    .btn-primary:hover { background: var(--primary-2); }
+    .btn-secondary { background: #edf5f4; color: var(--text); }
+    .btn-danger { background: #d92d20; color: white; }
+    .muted { color: var(--muted); font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; }
+    th { background: #f8fbfb; position: sticky; top: 0; }
+    .table-wrap { max-height: calc(100vh - 320px); overflow: auto; border: 1px solid var(--border); border-radius: 12px; margin-top: 12px; }
+    .badge-ok { background: var(--success-bg); color: var(--success-fg); border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 700; }
+    .badge-err { background: var(--error-bg); color: var(--error-fg); border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 700; }
+    select {
+      border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+      font-size: 13px; font-weight: 700; background: var(--panel-2); color: var(--text);
+      cursor: pointer; outline: none;
+    }
+    .pagination {
+      display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+      gap: 8px; margin-top: 12px; font-size: 13px;
+    }
+    .pagination .pages { display: flex; gap: 4px; flex-wrap: wrap; }
+    .page-btn {
+      border: 1px solid var(--border); border-radius: 8px; padding: 5px 11px;
+      font-size: 13px; font-weight: 600; cursor: pointer; background: var(--panel-2); color: var(--text);
+    }
+    .page-btn:hover { background: var(--primary); color: white; border-color: var(--primary); }
+    .page-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
+    .page-btn:disabled { opacity: .4; cursor: default; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <section class="hero">
+      <h1>&#128222; Banco de Telefones</h1>
+      <span id="heroCount" style="background:rgba(255,255,255,.18);border-radius:999px;padding:6px 14px;font-size:14px;font-weight:700;">...</span>
+    </section>
+
+    <section class="card">
+      <div class="row" style="margin-bottom:12px;">
+        <input id="cacheSearch" type="text" placeholder="Buscar número..." style="flex:1;min-width:180px;" />
+        <select id="cacheFilter">
+          <option value="all">Todos</option>
+          <option value="true">Com WhatsApp</option>
+          <option value="false">Sem WhatsApp</option>
+        </select>
+        <button id="btnCacheSearch" class="btn btn-primary">Buscar</button>
+      </div>
+      <div class="muted" id="cacheCount"></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Telefone</th>
+              <th>Status</th>
+              <th>Data da consulta</th>
+              <th>Ações</th>
+            </tr>
+          </thead>
+          <tbody id="cacheBody"></tbody>
+        </table>
+      </div>
+      <div class="pagination" id="pagination" style="display:none;">
+        <div class="muted" id="pageInfo"></div>
+        <div class="pages" id="pageButtons"></div>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span class="muted">Ir para:</span>
+          <input id="pageJump" type="number" min="1" style="width:64px;padding:5px 8px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:var(--panel-2);color:var(--text);outline:none;" />
+          <button id="btnPageJump" class="page-btn">OK</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const PAGE_SIZE = 100;
+    let currentPage = 1;
+    let currentTotal = 0;
+    let currentQuery = '';
+    let currentFilter = 'all';
+
+    function escapeHtml(v) {
+      return String(v || '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+    }
+
+    async function loadCount() {
+      const info = await window.banco.getCacheInfo();
+      document.getElementById('heroCount').textContent = info.count.toLocaleString('pt-BR') + ' números';
+    }
+
+    function renderPagination(total, page) {
+      const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+      const pagination = document.getElementById('pagination');
+      const pageButtons = document.getElementById('pageButtons');
+      const pageInfo = document.getElementById('pageInfo');
+      const from = Math.min((page - 1) * PAGE_SIZE + 1, total);
+      const to = Math.min(page * PAGE_SIZE, total);
+      pageInfo.textContent = `${from.toLocaleString('pt-BR')}–${to.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')}`;
+      pagination.style.display = total > PAGE_SIZE ? '' : 'none';
+      pageButtons.innerHTML = '';
+
+      const addBtn = (label, targetPage, isActive = false, disabled = false) => {
+        const btn = document.createElement('button');
+        btn.className = 'page-btn' + (isActive ? ' active' : '');
+        btn.textContent = label;
+        btn.disabled = disabled;
+        btn.addEventListener('click', () => goToPage(targetPage));
+        pageButtons.appendChild(btn);
+      };
+
+      addBtn('◄', page - 1, false, page === 1);
+
+      // Page window: first, ..., [p-2..p+2], ..., last
+      const pages = new Set();
+      pages.add(1);
+      pages.add(totalPages);
+      for (let i = Math.max(1, page - 2); i <= Math.min(totalPages, page + 2); i++) pages.add(i);
+      const sorted = [...pages].sort((a, b) => a - b);
+      let prev = 0;
+      for (const p of sorted) {
+        if (p - prev > 1) {
+          const ellipsis = document.createElement('span');
+          ellipsis.textContent = '…';
+          ellipsis.style.cssText = 'padding:5px 6px;color:var(--muted);font-size:13px;';
+          pageButtons.appendChild(ellipsis);
+        }
+        addBtn(p, p, p === page);
+        prev = p;
+      }
+
+      addBtn('►', page + 1, false, page === totalPages);
+
+      document.getElementById('pageJump').max = totalPages;
+    }
+
+    async function goToPage(page) {
+      const totalPages = Math.max(1, Math.ceil(currentTotal / PAGE_SIZE));
+      page = Math.max(1, Math.min(page, totalPages));
+      currentPage = page;
+      await fetchAndRender();
+    }
+
+    async function fetchAndRender() {
+      const offset = (currentPage - 1) * PAGE_SIZE;
+      const result = await window.banco.searchCache(currentQuery, currentFilter, offset, PAGE_SIZE);
+      currentTotal = result.total;
+      const cacheBody = document.getElementById('cacheBody');
+      cacheBody.innerHTML = '';
+      document.getElementById('cacheCount').textContent =
+        `${result.total.toLocaleString('pt-BR')} resultado(s)`;
+
+      for (const { phone, hasWa, checkedAt } of result.rows) {
+        const tr = document.createElement('tr');
+        const badge = hasWa
+          ? '<span class="badge-ok">Com WhatsApp</span>'
+          : '<span class="badge-err">Sem WhatsApp</span>';
+        tr.innerHTML = `
+          <td>${escapeHtml(phone)}</td>
+          <td>${badge}</td>
+          <td style="color:var(--muted);font-size:12px;">${escapeHtml(checkedAt || '—')}</td>
+          <td><button class="btn btn-secondary" style="padding:4px 10px;font-size:12px;" data-phone="${escapeHtml(phone)}">&#8635; Revalidar</button></td>
+        `;
+        cacheBody.appendChild(tr);
+      }
+
+      renderPagination(currentTotal, currentPage);
+      // scroll table back to top
+      const wrap = document.querySelector('.table-wrap');
+      if (wrap) wrap.scrollTop = 0;
+    }
+
+    async function runSearch() {
+      currentQuery = document.getElementById('cacheSearch').value;
+      currentFilter = document.getElementById('cacheFilter').value;
+      currentPage = 1;
+      await fetchAndRender();
+    }
+
+    document.getElementById('btnCacheSearch').addEventListener('click', runSearch);
+    document.getElementById('cacheSearch').addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(); });
+    document.getElementById('btnPageJump').addEventListener('click', () => {
+      const v = parseInt(document.getElementById('pageJump').value, 10);
+      if (v) goToPage(v);
+    });
+    document.getElementById('pageJump').addEventListener('keydown', e => {
+      if (e.key === 'Enter') document.getElementById('btnPageJump').click();
+    });
+
+    document.getElementById('cacheBody').addEventListener('click', async e => {
+      const btn = e.target.closest('button[data-phone]');
+      if (!btn) return;
+      const phone = btn.dataset.phone;
+      btn.disabled = true;
+      btn.textContent = '...';
+      const res = await window.banco.revalidatePhone(phone);
+      if (res.ok) {
+        await fetchAndRender();
+        await loadCount();
+      } else {
+        btn.disabled = false;
+        btn.textContent = '\u21BB Revalidar';
+        alert(`Erro ao revalidar: ${res.error}`);
+      }
+    });
+
+    loadCount();
+    runSearch();
+  </script>
+</body>
+</html>

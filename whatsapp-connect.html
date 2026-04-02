@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Conexão WhatsApp</title>
+  <style>
+    :root {
+      --bg: #f4f7f8;
+      --panel: #ffffff;
+      --panel-2: #f8fbfb;
+      --text: #17313a;
+      --muted: #667b82;
+      --primary: #0d8f7a;
+      --primary-2: #0b6b5b;
+      --border: #d8e3e6;
+      --success-bg: #e8f8ef;
+      --success-fg: #18794e;
+      --error-bg: #fdecec;
+      --error-fg: #b42318;
+      --warn-bg: #fff7e6;
+      --warn-fg: #9a6700;
+      --shadow: 0 10px 30px rgba(13,45,51,.08);
+      --radius: 14px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Segoe UI, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .header {
+      background: linear-gradient(135deg, #0d8f7a, #146a76);
+      color: white;
+      padding: 16px 20px;
+      flex-shrink: 0;
+    }
+    .header h1 { margin: 0; font-size: 18px; font-weight: 700; }
+    .header p { margin: 4px 0 0; font-size: 12px; opacity: .85; }
+    .body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 28px 24px;
+      gap: 20px;
+    }
+    /* Avatar */
+    .avatar-wrap {
+      position: relative;
+      width: 100px;
+      height: 100px;
+    }
+    .avatar {
+      width: 100px;
+      height: 100px;
+      border-radius: 50%;
+      object-fit: cover;
+      border: 3px solid var(--border);
+      background: #e0eaec;
+    }
+    .avatar-placeholder {
+      width: 100px;
+      height: 100px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #d3e8e4, #c0d8d4);
+      border: 3px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 42px;
+      color: #8ab4af;
+    }
+    .status-dot {
+      position: absolute;
+      bottom: 4px;
+      right: 4px;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      border: 3px solid var(--bg);
+      background: #aaa;
+    }
+    .status-dot.connected { background: #22c55e; }
+    .status-dot.connecting { background: #f59e0b; }
+    /* Account info */
+    .account-name {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text);
+      text-align: center;
+    }
+    .account-meta {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+    }
+    .account-meta span {
+      font-size: 13px;
+      color: var(--muted);
+    }
+    /* Badge */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .ok   { background: var(--success-bg); color: var(--success-fg); }
+    .err  { background: var(--error-bg);   color: var(--error-fg); }
+    .warn { background: var(--warn-bg);    color: var(--warn-fg); }
+    /* Button */
+    .btn {
+      border: 0;
+      border-radius: 10px;
+      padding: 12px 28px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      width: 100%;
+      max-width: 260px;
+      transition: background .15s;
+    }
+    .btn:disabled { opacity: .5; cursor: default; }
+    .btn-primary { background: var(--primary); color: white; }
+    .btn-primary:hover:not(:disabled) { background: var(--primary-2); }
+    .btn-danger  { background: #d92d20; color: white; }
+    .btn-danger:hover:not(:disabled)  { background: #b91c1c; }
+    .divider {
+      width: 100%;
+      max-width: 260px;
+      border: none;
+      border-top: 1px solid var(--border);
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>&#128247; Conexão WhatsApp</h1>
+    <p>Gerencie a conexão com o WhatsApp Web</p>
+  </div>
+
+  <div class="body">
+    <div class="avatar-wrap">
+      <div id="avatarPlaceholder" class="avatar-placeholder">&#128100;</div>
+      <img id="avatarImg" class="avatar" style="display:none;" alt="Foto de perfil" />
+      <div id="statusDot" class="status-dot"></div>
+    </div>
+
+    <div>
+      <div id="accountName" class="account-name">Não conectado</div>
+      <div class="account-meta">
+        <span id="accountPhone"></span>
+        <span id="accountPlatform"></span>
+      </div>
+    </div>
+
+    <div id="statusBadge" class="badge warn">Aguardando...</div>
+
+    <hr class="divider" />
+
+    <button id="btnAction" class="btn btn-primary" disabled>Conectar WhatsApp</button>
+  </div>
+
+  <script>
+    const btn = document.getElementById('btnAction');
+    const badge = document.getElementById('statusBadge');
+    const statusDot = document.getElementById('statusDot');
+    const avatarImg = document.getElementById('avatarImg');
+    const avatarPlaceholder = document.getElementById('avatarPlaceholder');
+    const accountName = document.getElementById('accountName');
+    const accountPhone = document.getElementById('accountPhone');
+    const accountPlatform = document.getElementById('accountPlatform');
+
+    let connected = false;
+
+    function formatPhone(raw) {
+      if (!raw) return '';
+      // raw is digits like 5511999999999, format as +55 (11) 99999-9999
+      const s = String(raw).replace(/\D/g, '');
+      if (s.startsWith('55') && s.length >= 12) {
+        const ddd = s.slice(2, 4);
+        const num = s.slice(4);
+        const part1 = num.length === 9 ? num.slice(0, 5) : num.slice(0, 4);
+        const part2 = num.slice(part1.length);
+        return `+55 (${ddd}) ${part1}-${part2}`;
+      }
+      return '+' + s;
+    }
+
+    function setConnected(info) {
+      connected = true;
+      statusDot.className = 'status-dot connected';
+      badge.className = 'badge ok';
+      badge.textContent = '● Conectado';
+      accountName.textContent = info.name || 'Conta WhatsApp';
+      accountPhone.textContent = formatPhone(info.phone);
+      accountPlatform.textContent = info.platform ? `Plataforma: ${info.platform}` : '';
+      if (info.profilePicUrl) {
+        avatarImg.src = info.profilePicUrl;
+        avatarImg.style.display = '';
+        avatarPlaceholder.style.display = 'none';
+      } else {
+        avatarImg.style.display = 'none';
+        avatarPlaceholder.style.display = '';
+      }
+      btn.textContent = 'Desconectar WhatsApp';
+      btn.className = 'btn btn-danger';
+      btn.disabled = false;
+    }
+
+    function setDisconnected() {
+      connected = false;
+      statusDot.className = 'status-dot';
+      badge.className = 'badge err';
+      badge.textContent = '○ Desconectado';
+      accountName.textContent = 'Não conectado';
+      accountPhone.textContent = '';
+      accountPlatform.textContent = '';
+      avatarImg.style.display = 'none';
+      avatarPlaceholder.style.display = '';
+      btn.textContent = 'Conectar WhatsApp';
+      btn.className = 'btn btn-primary';
+      btn.disabled = false;
+    }
+
+    function setConnecting(message) {
+      statusDot.className = 'status-dot connecting';
+      badge.className = 'badge warn';
+      badge.textContent = message || 'Conectando...';
+      btn.disabled = true;
+    }
+
+    // Load initial state
+    window.waConnect.getWaInfo().then(info => {
+      if (info.connected) {
+        setConnected(info);
+      } else {
+        setDisconnected();
+      }
+    });
+
+    // Listen for live status updates
+    window.waConnect.onStatus(data => {
+      if (data.type === 'ready') {
+        // Fetch full info after ready event
+        window.waConnect.getWaInfo().then(info => {
+          if (info.connected) setConnected(info);
+          else setDisconnected();
+        });
+      } else if (data.type === 'authenticated') {
+        setConnecting('Autenticado. Aguardando...');
+      } else if (data.type === 'qr') {
+        statusDot.className = 'status-dot connecting';
+        badge.className = 'badge warn';
+        badge.textContent = 'Leia o QR Code no navegador';
+        btn.disabled = true;
+      } else if (data.type === 'error') {
+        setDisconnected();
+      } else if (data.type === 'warn') {
+        setConnecting(data.message);
+      }
+    });
+
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      if (connected) {
+        setConnecting('Desconectando...');
+        const res = await window.waConnect.disconnectWhatsApp();
+        if (!res.ok) {
+          badge.className = 'badge err';
+          badge.textContent = res.error || 'Erro ao desconectar';
+          btn.disabled = false;
+        }
+      } else {
+        setConnecting('Conectando...');
+        const res = await window.waConnect.connectWhatsApp();
+        if (!res.ok) {
+          badge.className = 'badge err';
+          badge.textContent = res.error || 'Falha ao conectar';
+          btn.disabled = false;
+        }
+      }
+    });
+  </script>
+</body>
+</html>
