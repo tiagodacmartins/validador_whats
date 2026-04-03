@@ -88,7 +88,9 @@
     .grid {
       display: grid;
       grid-template-columns: 1.15fr 0.65fr 0.75fr;
+      grid-template-rows: 500px;
       gap: 6px;
+      align-items: stretch;
     }
     .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
     .stack { display: grid; gap: 6px; }
@@ -231,7 +233,7 @@
     }
 
     /* ── Stat tiles ── */
-    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
     .stat {
       background: #c0c0c0;
       border: 2px solid;
@@ -239,8 +241,9 @@
       border-right-color: #ffffff; border-bottom-color: #ffffff;
       box-shadow: var(--sink);
       padding: 6px; border-radius: 0;
+      min-width: 0; overflow: hidden;
     }
-    .stat strong { display: block; font-size: 20px; margin-top: 2px; color: #000080; font-weight: bold; }
+    .stat strong { display: block; font-size: 18px; margin-top: 2px; color: #000080; font-weight: bold; }
 
     /* ── Help box ── */
     .help {
@@ -250,6 +253,9 @@
       border-right-color: #ffffff; border-bottom-color: #ffffff;
       box-shadow: var(--sink);
       padding: 6px 8px; font-size: 11px; border-radius: 0;
+      overflow-wrap: break-word;
+      word-break: break-all;
+      min-width: 0;
     }
 
     /* ── HR ── */
@@ -268,7 +274,7 @@
       box-shadow: var(--raise);
       overflow: hidden;
       display: flex; flex-direction: column;
-      min-height: 200px;
+      align-self: stretch;
     }
     .log-toolbar {
       display: flex; align-items: center; justify-content: space-between;
@@ -422,9 +428,9 @@
 
     <div id="tab-validador" class="tab-panel active">
     <div class="grid">
-      <section class="card stack">
+      <section class="card" style="display:flex;flex-direction:column;overflow:hidden;align-self:stretch;">
         <h2>Configuração</h2>
-
+        <div style="flex:1;overflow-y:auto;padding:4px 2px 2px;display:flex;flex-direction:column;gap:6px;">
         <div id="dropZone">
           <label>Arquivos de entrada</label>
           <div class="row">
@@ -470,7 +476,7 @@
         <div class="row">
           <button id="btnConnect" class="btn btn-secondary">&#128247; WhatsApp</button>
           <button id="btnStart" class="btn btn-primary">Iniciar validação</button>
-          <button id="btnCancel" class="btn btn-danger">Parar</button>
+          <button id="btnPause" class="btn btn-secondary" style="display:none;">|| Pausar</button>
         </div>
 
         <div class="row" style="gap:8px;align-items:center;">
@@ -478,21 +484,28 @@
           <label for="forceRevalidate" style="cursor:pointer;color:var(--text);font-size:13px;">Forçar validação (ignorar banco local)</label>
         </div>
 
+        <div class="row" style="gap:8px;align-items:center;">
+          <input type="checkbox" id="bankOnly" style="width:16px;height:16px;cursor:pointer;accent-color:var(--primary);" />
+          <label for="bankOnly" style="cursor:pointer;color:var(--text);font-size:13px;">Somente banco (sem consultar WhatsApp)</label>
+        </div>
+
         <div id="statusBadge" class="badge warn">Aguardando conexão</div>
 
         <div class="help">
           <strong>Padrão aceito:</strong> se a linha tiver colunas separadas por <code>;</code>, o sistema usa a <strong>primeira coluna</strong> como telefone. Se o número for válido no WhatsApp, o TXT de saída grava a <strong>linha inteira original</strong>, sem cabeçalho.
         </div>
+        </div><!-- scroll inner -->
       </section>
 
-      <aside class="card stack">
+      <div style="align-self:stretch;height:500px;overflow:hidden;display:flex;flex-direction:column;gap:6px;min-width:0;">
+      <aside class="card stack" style="flex-shrink:0;min-width:0;overflow:hidden;">
         <h2>Progresso</h2>
         <div class="progress"><div id="progressBar"></div></div>
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-          <div class="muted" id="progressText">0 / 0</div>
-          <div style="display:flex;gap:12px;align-items:center;">
-            <div class="muted" id="etaText" style="font-size:12px;font-variant-numeric:tabular-nums;"></div>
-            <div class="muted" id="timerText" style="font-variant-numeric:tabular-nums;">&#9201; 00:00:00</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:4px;min-width:0;overflow:hidden;">
+          <div class="muted" id="progressText" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1;">0 / 0</div>
+          <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
+            <div class="muted" id="etaText" style="font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap;"></div>
+            <div class="muted" id="timerText" style="font-variant-numeric:tabular-nums;white-space:nowrap;">&#9201; 00:00:00</div>
           </div>
         </div>
         <div class="stats">
@@ -513,6 +526,28 @@
         </div>
         <button id="btnOpenBanco" class="btn btn-secondary" style="width:100%;margin-top:4px;">&#128222; Banco de Telefones</button>
       </aside>
+
+      <section class="card" style="flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0;">
+        <h2>Validação rápida</h2>
+        <div style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:10px;padding:2px 0;">
+          <div>
+            <label>Telefone(s) — separados por vírgula</label>
+            <div class="row">
+              <input id="manualPhones" type="text" placeholder="Ex: 11999990000, 21988880000" style="flex:1;" />
+              <button id="btnManualValidate" class="btn btn-primary">Validar</button>
+            </div>
+          </div>
+          <div id="manualResults" style="display:none;">
+            <div class="table-wrap" style="max-height:180px;">
+              <table>
+                <thead><tr><th>Telefone digitado</th><th>Normalizado</th><th>Status</th><th>Verificado em</th></tr></thead>
+                <tbody id="manualTbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div><!-- scroll inner validação rápida -->
+      </section>
+      </div><!-- col2 -->
 
       <section class="log-panel">
         <div class="log-toolbar">
@@ -537,27 +572,6 @@
           </thead>
           <tbody id="tbody"></tbody>
         </table>
-      </div>
-    </section>
-
-    <section class="card" style="margin-top:18px;">
-      <h2>Validação rápida</h2>
-      <div class="stack" style="gap:10px;">
-        <div>
-          <label>Telefone(s) — separados por vírgula</label>
-          <div class="row">
-            <input id="manualPhones" type="text" placeholder="Ex: 11999990000, 21988880000" style="flex:1;" />
-            <button id="btnManualValidate" class="btn btn-primary">Validar</button>
-          </div>
-        </div>
-        <div id="manualResults" style="display:none;">
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>Telefone digitado</th><th>Normalizado</th><th>Status</th><th>Verificado em</th></tr></thead>
-              <tbody id="manualTbody"></tbody>
-            </table>
-          </div>
-        </div>
       </div>
     </section>
     </div><!-- #tab-validador -->
@@ -642,13 +656,21 @@
     document.getElementById('btnClearLog').addEventListener('click', () => {
       logOutput.innerHTML = '<span class="log-muted">Log limpo.</span>';
     });
+
+    // Exclusividade mútua entre os dois checkboxes
+    document.getElementById('forceRevalidate').addEventListener('change', function() {
+      if (this.checked) document.getElementById('bankOnly').checked = false;
+    });
+    document.getElementById('bankOnly').addEventListener('change', function() {
+      if (this.checked) document.getElementById('forceRevalidate').checked = false;
+    });
+
     const sValid = document.getElementById('sValid');
     const sInvalid = document.getElementById('sInvalid');
     const sFormat = document.getElementById('sFormat');
     const sError = document.getElementById('sError');
 
     let state = { valid: 0, invalid: 0, format: 0, error: 0, cached: 0 };
-    let paused = false;
     let outputDir = '';
     let selectedFiles = [];
     let etaStartTime = null;
@@ -677,15 +699,35 @@
       });
     }
 
-    function setPauseButton(isPaused) {
-      const btn = document.getElementById('btnCancel');
-      if (isPaused) {
-        btn.textContent = '\u21BA Retomar';
-        btn.className = 'btn btn-secondary';
+    let paused = false;
+
+    function setValidatingMode(on) {
+      const btnStart = document.getElementById('btnStart');
+      const btnPause = document.getElementById('btnPause');
+      if (on) {
+        btnStart.textContent = '\u25A0 Parar';
+        btnStart.className = 'btn btn-danger';
+        btnPause.style.display = '';
+        btnPause.disabled = false;
+        btnPause.textContent = '|| Pausar';
+        btnPause.className = 'btn btn-secondary';
       } else {
-        btn.textContent = 'Parar';
-        btn.className = 'btn btn-danger';
+        btnStart.textContent = 'Iniciar validação';
+        btnStart.className = 'btn btn-primary';
+        btnPause.style.display = 'none';
       }
+    }
+
+    function resetUI() {
+      tbody.innerHTML = '';
+      state = { valid: 0, invalid: 0, format: 0, error: 0, cached: 0 };
+      sValid.textContent = '0'; sInvalid.textContent = '0'; sFormat.textContent = '0'; sError.textContent = '0';
+      document.getElementById('sCached').textContent = '0';
+      progressBar.style.width = '0%';
+      progressText.textContent = '0 / 0';
+      document.getElementById('partialDownloadArea').style.display = 'none';
+      resultInfo.textContent = 'O TXT final terá somente as linhas válidas, sem cabeçalho. O CSV terá o relatório completo.';
+      resetTimer();
     }
 
     // Load initial cache count
@@ -820,14 +862,13 @@
     // Auto-connect badge
     setBadge('warn', 'Conectando...');
 
-    async function runValidation(resumeFrom) {
+    async function runValidation(resumeFrom = false) {
       isValidating = true;
       paused = false;
-      document.getElementById('btnStart').disabled = true;
-      setPauseButton(false);
+      setValidatingMode(true);
       startTimer();
       setBadge('warn', resumeFrom ? 'Retomando...' : 'Validando...');
-      resultInfo.textContent = resumeFrom ? 'Retomando...' : 'Processando...';
+      resultInfo.textContent = 'Processando...';
       logLine(resumeFrom ? 'Retomando validação...' : `Iniciando validação de ${selectedFiles.length} arquivo(s)...`, 'log-info');
 
       const res = await window.waApp.startValidation({
@@ -838,37 +879,47 @@
         batchPauseMs: Number(document.getElementById('batchPause').value),
         outputDir,
         resumeFrom,
-        forceRevalidate: document.getElementById('forceRevalidate').checked
+        forceRevalidate: document.getElementById('forceRevalidate').checked,
+        bankOnly: document.getElementById('bankOnly').checked
       });
 
       isValidating = false;
       pauseTimer();
-      document.getElementById('btnStart').disabled = false;
+      const wasPaused = paused;
+      setValidatingMode(false);
 
       if (!res.ok) {
         setBadge('error', res.error || 'Erro ao validar.');
-        paused = false;
-        setPauseButton(false);
         return;
       }
 
       if (res.canceled) {
-        paused = true;
-        setPauseButton(true);
-        setBadge('warn', `Processo interrompido. ${res.valid} linhas válidas encontradas até agora.`);
-        resultInfo.textContent = 'Validação pausada. Clique em "Retomar" para continuar.';
-        logLine('Validação pausada pelo usuário.', 'log-warn');
-        const area = document.getElementById('partialDownloadArea');
-        const btn = document.getElementById('btnDownloadPartial');
-        if (res.partialZip) {
-          area.style.display = '';
-          btn.onclick = () => window.waApp.openPath(res.partialZip);
+        if (wasPaused) {
+          // pausado pelo usuário — mantém dados e mostra botão retomar
+          const btnPause = document.getElementById('btnPause');
+          btnPause.style.display = '';
+          btnPause.disabled = false;
+          btnPause.textContent = '\u21BA Retomar';
+          btnPause.className = 'btn btn-secondary';
+          // btnStart vira "■ Parar" mesmo pausado, para permitir cancelamento total
+          const btnStart = document.getElementById('btnStart');
+          btnStart.textContent = '\u25A0 Parar';
+          btnStart.className = 'btn btn-danger';
+          setBadge('warn', `Pausado. ${res.valid} linhas válidas até agora.`);
+          resultInfo.textContent = 'Validação pausada. Clique em "Retomar" para continuar.';
+          logLine('Validação pausada pelo usuário.', 'log-warn');
+          if (res.partialZip) {
+            const area = document.getElementById('partialDownloadArea');
+            area.style.display = '';
+            document.getElementById('btnDownloadPartial').onclick = () => window.waApp.openPath(res.partialZip);
+          }
         } else {
-          area.style.display = 'none';
+          // parado pelo botão Parar — limpa tudo
+          resetUI();
+          setBadge('warn', 'Validação interrompida.');
+          logLine('Validação interrompida pelo usuário.', 'log-warn');
         }
       } else {
-        paused = false;
-        setPauseButton(false);
         document.getElementById('partialDownloadArea').style.display = 'none';
         setBadge('ready', `Concluído. ${res.valid} linhas válidas.`);
         document.getElementById('etaText').textContent = '';
@@ -876,35 +927,45 @@
         document.getElementById('btnOpenFolder').onclick = () => window.waApp.openPath(res.zipOut);
         logLine(`Concluído! ${res.valid} números com WhatsApp de ${res.total} total. ZIP: ${res.zipOut}`, 'log-ok');
         if (typeof Notification !== 'undefined') {
-          new Notification('Valida\u00e7\u00e3o conclu\u00edda', { body: `${res.valid} n\u00fameros com WhatsApp em ${selectedFiles.length} arquivo(s).` });
+          new Notification('Validação concluída', { body: `${res.valid} números com WhatsApp em ${selectedFiles.length} arquivo(s).` });
         }
       }
-
     }
 
     document.getElementById('btnStart').addEventListener('click', async () => {
+      if (isValidating) {
+        paused = false;
+        await window.waApp.cancelValidation();
+        setBadge('warn', 'Solicitando parada...');
+        return;
+      }
+      if (paused) {
+        // estava pausado — parar definitivamente e limpar
+        paused = false;
+        resetUI();
+        return;
+      }
       if (!selectedFiles.length) {
         alert('Selecione pelo menos um arquivo TXT.');
         return;
       }
-      paused = false;
-      setPauseButton(false);
-      tbody.innerHTML = '';
-      state = { valid: 0, invalid: 0, format: 0, error: 0, cached: 0 };
-      sValid.textContent = '0'; sInvalid.textContent = '0'; sFormat.textContent = '0'; sError.textContent = '0';
-      document.getElementById('sCached').textContent = '0';
-      progressBar.style.width = '0%';
-      progressText.textContent = '0 / 0';
-      resetTimer();
+      resetUI();
       await runValidation(false);
     });
 
-    document.getElementById('btnCancel').addEventListener('click', async () => {
+    document.getElementById('btnPause').addEventListener('click', async () => {
+      const btn = document.getElementById('btnPause');
       if (paused) {
+        // retomar
+        paused = false;
+        btn.style.display = 'none';
         await runValidation(true);
       } else {
+        // pausar
+        paused = true;
+        btn.textContent = 'Aguardando pausa...';
+        btn.disabled = true;
         await window.waApp.cancelValidation();
-        setBadge('warn', 'Solicitando parada...');
       }
     });
 
@@ -950,6 +1011,7 @@
       else if (data.row.status === 'sem_whatsapp') { state.invalid++; if (!data.row.fromCache) logLine(`✘ ${data.row.normalized} — sem WhatsApp`, 'log-muted'); }
       else if (data.row.status === 'formato_invalido') { state.format++; logLine(`! Formato inválido: ${data.row.line}`, 'log-warn'); }
       else if (data.row.status === 'erro') { state.error++; logLine(`Erro em ${data.row.normalized}: ${data.row.details}`, 'log-err'); }
+      else if (data.row.status === 'sem_dados') { /* somente banco: não encontrado, sem log */ }
 
       sValid.textContent = state.valid;
       sInvalid.textContent = state.invalid;

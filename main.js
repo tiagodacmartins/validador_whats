@@ -114,6 +114,41 @@ function initSessionCache() {
   phoneCache = {};
 }
 
+function getNumberIdWithTimeout(client, normalized, timeoutMs = 20000) {
+  return Promise.race([
+    client.getNumberId(normalized),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('getNumberId timeout')), timeoutMs)
+    )
+  ]);
+}
+
+async function getNumberIdWithRetry(normalized, maxRetries = 3, retryDelayMs = 5000) {
+  let lastErr;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const activeClient = getNextClient();
+    if (!activeClient) throw new Error('Nenhuma conta WhatsApp conectada.');
+    try {
+      return await getNumberIdWithTimeout(activeClient, normalized);
+    } catch (err) {
+      lastErr = err;
+      const msg = err.message || String(err);
+      const isTransient = msg.includes('detached Frame')
+        || msg.includes('Execution context was destroyed')
+        || msg.includes('Target closed')
+        || msg.includes('Session closed')
+        || msg.includes('getNumberId timeout');
+      if (isTransient) {
+        console.warn(`[getNumberId] Tentativa ${attempt + 1}/${maxRetries} falhou (${msg.split('\n')[0]}). Aguardando ${retryDelayMs}ms...`);
+        await sleep(retryDelayMs);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
+}
+
 async function lookupPhone(phone) {
   if (Object.prototype.hasOwnProperty.call(phoneCache, phone)) {
     return phoneCache[phone];
@@ -419,7 +454,10 @@ ipcMain.handle('search-cache', async (_event, query, filter, offset = 0, pageSiz
       rows: rows.map(r => ({ phone: r.phone, hasWa: r.has_wa, checkedAt: r.checked_at ? formatDate(r.checked_at) : null })),
       total
     };
-  } catch { return { rows: [], total: 0 }; }
+  } catch (err) {
+    console.error('[search-cache] Erro ao consultar banco:', err.message || err);
+    return { rows: [], total: 0, error: err.message || String(err) };
+  }
 });
 
 ipcMain.handle('open-connect-window', () => {
@@ -487,7 +525,10 @@ ipcMain.handle('get-cache-info', async () => {
   try {
     const { rows } = await pool.query('SELECT COUNT(*) AS total FROM phone_cache');
     return { count: Number(rows[0].total) };
-  } catch { return { count: 0 }; }
+  } catch (err) {
+    console.error('[get-cache-info] Erro ao consultar banco:', err.message || err);
+    return { count: 0, error: err.message || String(err) };
+  }
 });
 
 ipcMain.handle('start-validation', async (_event, payload) => {
@@ -503,14 +544,18 @@ ipcMain.handle('start-validation', async (_event, payload) => {
       batchPauseMs = 30000,
       resumeFrom = false,
       outputDir: payloadOutputDir = '',
-      forceRevalidate = false
+      forceRevalidate = false,
+      bankOnly = false
     } = payload;
 
     if (!inputPaths || !inputPaths.length) return { ok: false, error: 'Nenhum arquivo selecionado.' };
 
+    const defaultOutputDir = path.join(__dirname, 'output');
+    if (!fs.existsSync(defaultOutputDir)) fs.mkdirSync(defaultOutputDir, { recursive: true });
+
     const resolvedOutputDir = (payloadOutputDir && fs.existsSync(payloadOutputDir))
       ? payloadOutputDir
-      : path.dirname(inputPaths[0]);
+      : defaultOutputDir;
 
     // Resume state
     let startFileIndex = 0;
@@ -601,11 +646,11 @@ ipcMain.handle('start-validation', async (_event, payload) => {
             fromCache: true
           };
           if (exists) validOriginalLines.push(originalLine);
+        } else if (bankOnly) {
+          row = { line: originalLine, normalized, status: 'sem_dados', details: 'Não encontrado no banco', fromCache: true };
         } else {
           try {
-            const activeClient = getNextClient();
-            if (!activeClient) throw new Error('Nenhuma conta WhatsApp conectada.');
-            const result = await activeClient.getNumberId(normalized);
+            const result = await getNumberIdWithRetry(normalized);
             const exists = !!result;
             const checkedAt = nowBRT();
             phoneCache[normalized] = { hasWa: exists, checkedAt };
@@ -686,9 +731,7 @@ ipcMain.handle('validate-phones-manual', async (_event, phones) => {
       continue;
     }
     try {
-      const activeClient = getNextClient();
-      if (!activeClient) throw new Error('Nenhuma conta conectada.');
-      const result = await activeClient.getNumberId(normalized);
+      const result = await getNumberIdWithRetry(normalized);
       const exists = !!result;
       const checkedAt = nowBRT();
       phoneCache[normalized] = { hasWa: exists, checkedAt };
@@ -715,9 +758,7 @@ ipcMain.handle('get-file-info', (_event, filePaths) => {
 
 ipcMain.handle('revalidate-phone', async (_event, phone) => {
   try {
-    const activeClient = getNextClient();
-    if (!activeClient) return { ok: false, error: 'Nenhuma conta WhatsApp conectada.' };
-    const result = await activeClient.getNumberId(phone);
+    const result = await getNumberIdWithRetry(phone);
     const exists = !!result;
     const checkedAt = nowBRT();
     phoneCache[phone] = { hasWa: exists, checkedAt };

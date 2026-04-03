@@ -133,7 +133,12 @@
 
     async function loadCount() {
       const info = await window.banco.getCacheInfo();
-      document.getElementById('heroCount').textContent = info.count.toLocaleString('pt-BR') + ' números';
+      if (info.error) {
+        document.getElementById('heroCount').textContent = 'Erro ao conectar';
+        document.getElementById('heroCount').style.background = 'rgba(217,45,32,.35)';
+      } else {
+        document.getElementById('heroCount').textContent = info.count.toLocaleString('pt-BR') + ' números';
+      }
     }
 
     function renderPagination(total, page) {
@@ -194,6 +199,14 @@
       currentTotal = result.total;
       const cacheBody = document.getElementById('cacheBody');
       cacheBody.innerHTML = '';
+
+      if (result.error) {
+        document.getElementById('cacheCount').innerHTML =
+          `<span style="color:var(--error-fg);font-weight:700;">&#9888; Erro ao consultar banco: ${escapeHtml(result.error)}</span>`;
+        renderPagination(0, 1);
+        return;
+      }
+
       document.getElementById('cacheCount').textContent =
         `${result.total.toLocaleString('pt-BR')} resultado(s)`;
 
