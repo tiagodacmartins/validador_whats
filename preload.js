@@ -35,6 +35,12 @@ contextBridge.exposeInMainWorld('waApp', {
   validatePhonesManual: (phones) => ipcRenderer.invoke('validate-phones-manual', phones),
 
   // ── Banco de dados (phone_cache) ─────────────────────────────
+  /** Conecta ao banco com as credenciais fornecidas. */
+  connectDb: (config) => ipcRenderer.invoke('connect-db', config),
+  /** Desconecta do banco e libera o pool. */
+  disconnectDb: () => ipcRenderer.invoke('disconnect-db'),
+  /** Retorna se o banco está conectado. */
+  getDbStatus: () => ipcRenderer.invoke('get-db-status'),
   /** Retorna o total de registros no banco. */
   getCacheInfo: () => ipcRenderer.invoke('get-cache-info'),
   /** Pesquisa paginada no banco com filtro de número e status. */
@@ -69,11 +75,21 @@ contextBridge.exposeInMainWorld('waApp', {
   /** Abre o Explorer na pasta do arquivo indicado. */
   openPath: (p) => ipcRenderer.invoke('open-path', p),
 
+  // ── Controles da janela ────────────────────────────────────────
+  /** Minimiza a janela principal. */
+  windowMinimize: () => ipcRenderer.send('win-minimize'),
+  /** Alterna entre maximizado e restaurado. */
+  windowMaximize: () => ipcRenderer.send('win-maximize'),
+  /** Fecha a janela. */
+  windowClose:    () => ipcRenderer.send('win-close'),  /** Retorna a versão do app definida no package.json. */
+  getAppVersion:  () => ipcRenderer.invoke('get-app-version'),
   // ── Eventos (push do main → renderer) ───────────────────────
   /** Registra callback para receber atualizações de status do WhatsApp. */
   onStatus:   (callback) => ipcRenderer.on('wa-status',            (_e, data) => callback(data)),
   /** Registra callback para receber atualizações das contas. */
   onAccounts: (callback) => ipcRenderer.on('wa-accounts',          (_e, data) => callback(data)),
   /** Registra callback para receber progresso da validação em lote. */
-  onProgress: (callback) => ipcRenderer.on('validation-progress',  (_e, data) => callback(data))
+  onProgress: (callback) => ipcRenderer.on('validation-progress',  (_e, data) => callback(data)),
+  /** Registra callback para receber atualizações do status do banco. */
+  onDbStatus: (callback) => ipcRenderer.on('db-status', (_e, data) => callback(data))
 });

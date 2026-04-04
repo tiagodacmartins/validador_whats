@@ -17,5 +17,9 @@ contextBridge.exposeInMainWorld('waConnect', {
   /** Retorna informações da conta conectada (nome, número, plataforma). */
   getWaInfo:          () => ipcRenderer.invoke('get-wa-info'),
   /** Registra callback para receber atualizações de status do WhatsApp. */
-  onStatus: (callback) => ipcRenderer.on('wa-status', (_e, data) => callback(data))
+  onStatus: (callback) => ipcRenderer.on('wa-status', (_e, data) => callback(data)),
+  /** Controles da janela. */
+  windowMinimize: () => ipcRenderer.send('win-minimize'),
+  windowMaximize: () => ipcRenderer.send('win-maximize'),
+  windowClose:    () => ipcRenderer.send('win-close')
 });

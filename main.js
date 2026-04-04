@@ -6,7 +6,7 @@
 
 'use strict';
 
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
 const path   = require('path');
 const fs     = require('fs');
 const { Client, LocalAuth } = require('whatsapp-web.js');
@@ -20,10 +20,8 @@ const EDGE_PATH_X64 = 'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.e
 const OUTPUT_DIR    = path.join(__dirname, 'output');
 
 // ── Conexão com o banco (PostgreSQL / Supabase) ───────────────
-const dbConfig = JSON.parse(
-  fs.readFileSync(path.join(__dirname, 'db-config.json'), 'utf8')
-);
-const pool = new Pool(dbConfig);
+// Pool inicializado via IPC 'connect-db' — não há credenciais em disco.
+let pool = null;
 
 // ── Estado global da aplicação ────────────────────────────────
 let mainWindow    = null;
@@ -134,6 +132,17 @@ function initSessionCache() {
 // ═══════════════════════════════════════════════════════════════
 //  COMUNICAÇÃO COM O FRONTEND (broadcast)
 // ═══════════════════════════════════════════════════════════════
+
+/**
+ * Notifica todas as janelas abertas sobre mudança no estado da conexão com o banco.
+ * @param {{ connected: boolean }} data
+ */
+function broadcastDbStatus(data) {
+  mainWindow?.webContents.send('db-status', data);
+  if (bancoWindow && !bancoWindow.isDestroyed()) {
+    bancoWindow.webContents.send('db-status', data);
+  }
+}
 
 /**
  * Envia um evento de status do WhatsApp para todas as janelas abertas.
@@ -356,6 +365,90 @@ async function getNumberIdWithRetry(normalized, maxRetries = 3, retryDelayMs = 5
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  PERSISTÊNCIA DE CREDENCIAIS DO BANCO
+// ═══════════════════════════════════════════════════════════════
+
+const DB_CONFIG_PATH = () => path.join(app.getPath('userData'), 'db-config.json');
+
+/** Salva as credenciais do banco no userData (fora do projeto/git). */
+function saveDbConfig(config) {
+  try {
+    fs.writeFileSync(DB_CONFIG_PATH(), JSON.stringify(config), 'utf8');
+  } catch {}
+}
+
+/** Remove as credenciais salvas (ao desconectar). */
+function deleteDbConfig() {
+  try {
+    const p = DB_CONFIG_PATH();
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+  } catch {}
+}
+
+/** Carrega e retorna a config salva, ou null se não existir. */
+function loadDbConfig() {
+  try {
+    const p = DB_CONFIG_PATH();
+    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch {}
+  return null;
+}
+
+/** Tenta conectar ao banco com uma config. Retorna true se sucesso. */
+async function tryConnectDb(config) {
+  const newPool = new Pool({
+    host:              String(config.host).trim(),
+    port:              Number(config.port) || 5432,
+    database:          String(config.database || 'postgres').trim(),
+    user:              String(config.user).trim(),
+    password:          String(config.password),
+    ssl:               config.ssl ? { rejectUnauthorized: false } : false,
+    max:               10,
+    idleTimeoutMillis: 30000
+  });
+  await newPool.query('SELECT 1');
+  pool = newPool;
+  return true;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  IPC HANDLERS — Conexão com o banco
+// ═══════════════════════════════════════════════════════════════
+
+// Conecta ao banco com as credenciais fornecidas pelo usuário
+ipcMain.handle('connect-db', async (_event, config) => {
+  if (!config?.host || !config?.user || !config?.password) {
+    return { ok: false, error: 'Host, usuário e senha são obrigatórios.' };
+  }
+  if (pool) {
+    try { await pool.end(); } catch {}
+    pool = null;
+  }
+  try {
+    await tryConnectDb(config);
+    saveDbConfig(config);
+    broadcastDbStatus({ connected: true });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+// Desconecta do banco e libera o pool
+ipcMain.handle('disconnect-db', async () => {
+  if (pool) {
+    try { await pool.end(); } catch {}
+    pool = null;
+  }
+  deleteDbConfig();
+  broadcastDbStatus({ connected: false });
+  return { ok: true };
+});
+
+// Retorna se o banco está conectado
+ipcMain.handle('get-db-status', () => ({ connected: pool !== null }));
+
+// ═══════════════════════════════════════════════════════════════
 //  BANCO DE DADOS — phone_cache
 // ═══════════════════════════════════════════════════════════════
 
@@ -370,6 +463,7 @@ async function lookupPhone(phone) {
   if (Object.prototype.hasOwnProperty.call(phoneCache, phone)) {
     return phoneCache[phone];
   }
+  if (!pool) return null;
   try {
     const { rows } = await pool.query(
       'SELECT has_wa, checked_at FROM phone_cache WHERE phone = $1',
@@ -392,6 +486,7 @@ async function lookupPhone(phone) {
  * Usa ON CONFLICT para atualizar registros existentes.
  */
 async function savePhone(phone, hasWa, checkedAt) {
+  if (!pool) return;
   try {
     await pool.query(
       `INSERT INTO phone_cache (phone, has_wa, checked_at)
@@ -477,7 +572,8 @@ function createWindow() {
     height:    860,
     minWidth:  1050,
     minHeight: 760,
-    backgroundColor: '#f4f7f8',
+    frame:     false,
+    backgroundColor: '#c0c0c0',
     webPreferences: {
       preload:          path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -487,7 +583,7 @@ function createWindow() {
 
   mainWindow.loadFile('whatsapp-validator-gui.html');
 
-  // Ao terminar de carregar, inicia as contas salvas (ou cria uma conta padrão)
+  // Ao terminar de carregar, inicia as contas salvas e reconecta o banco (se houver config salva)
   mainWindow.webContents.once('did-finish-load', () => {
     initSessionCache();
     const savedIds = loadSavedAccountIds();
@@ -501,6 +597,14 @@ function createWindow() {
         if (!isNaN(n) && n >= nextAccountId) nextAccountId = n + 1;
       }
       for (const id of savedIds) startAccount(id).catch(() => {});
+    }
+
+    // Auto-connect ao banco se houver credenciais salvas
+    const savedDbConfig = loadDbConfig();
+    if (savedDbConfig) {
+      tryConnectDb(savedDbConfig)
+        .then(() => broadcastDbStatus({ connected: true }))
+        .catch(() => {}); // falha silenciosa — usuário reconecta manualmente
     }
   });
 }
@@ -658,7 +762,8 @@ ipcMain.handle('open-banco-window', () => {
   if (bancoWindow && !bancoWindow.isDestroyed()) { bancoWindow.focus(); return; }
   bancoWindow = new BrowserWindow({
     width: 960, height: 720, minWidth: 700, minHeight: 500,
-    backgroundColor: '#f4f7f8',
+    frame: false,
+    backgroundColor: '#c0c0c0',
     title: 'Banco de Telefones',
     parent: mainWindow,
     webPreferences: {
@@ -676,7 +781,8 @@ ipcMain.handle('open-connect-window', () => {
   if (connectWindow && !connectWindow.isDestroyed()) { connectWindow.focus(); return; }
   connectWindow = new BrowserWindow({
     width: 400, height: 540, resizable: false,
-    backgroundColor: '#f4f7f8',
+    frame: false,
+    backgroundColor: '#c0c0c0',
     title: 'Conexão WhatsApp',
     parent: mainWindow,
     webPreferences: {
@@ -700,6 +806,7 @@ ipcMain.handle('open-path', (_event, p) => {
 
 // Retorna o total de números armazenados no banco
 ipcMain.handle('get-cache-info', async () => {
+  if (!pool) return { count: 0, error: 'Banco não conectado.' };
   try {
     const { rows } = await pool.query('SELECT COUNT(*) AS total FROM phone_cache');
     return { count: Number(rows[0].total) };
@@ -711,6 +818,7 @@ ipcMain.handle('get-cache-info', async () => {
 
 // Pesquisa paginada no banco com filtros de número e status de WhatsApp
 ipcMain.handle('search-cache', async (_event, query, filter, offset = 0, pageSize = 100) => {
+  if (!pool) return { rows: [], total: 0, error: 'Banco não conectado.' };
   try {
     const q      = String(query || '').replace(/\D/g, '');
     const params = [];
@@ -753,6 +861,7 @@ ipcMain.handle('search-cache', async (_event, query, filter, offset = 0, pageSiz
 
 // Reconsulta um número específico no WhatsApp e atualiza o banco
 ipcMain.handle('revalidate-phone', async (_event, phone) => {
+  if (!pool) return { ok: false, error: 'Banco não conectado.' };
   try {
     const result    = await getNumberIdWithRetry(phone);
     const exists    = !!result;
@@ -1059,7 +1168,19 @@ ipcMain.handle('validate-phones-manual', async (_event, phones) => {
 //  CICLO DE VIDA DA APLICAÇÃO
 // ═══════════════════════════════════════════════════════════════
 
-app.whenReady().then(createWindow);
+// ── Controles da janela (frameless) ──────────────────────────
+ipcMain.on('win-minimize', (e) => BrowserWindow.fromWebContents(e.sender)?.minimize());
+ipcMain.on('win-maximize', (e) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (win?.isMaximized()) win.unmaximize(); else win?.maximize();
+});
+ipcMain.on('win-close', (e) => BrowserWindow.fromWebContents(e.sender)?.close());
+ipcMain.handle('get-app-version', () => app.getVersion());
+
+app.whenReady().then(() => {
+  Menu.setApplicationMenu(null);
+  createWindow();
+});
 
 // Encerra todas as sessões do WhatsApp antes de fechar o app
 let isQuitting = false;

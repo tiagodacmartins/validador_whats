@@ -141,9 +141,50 @@
       border: none;
       border-top: 1px solid var(--border);
     }
+
+    /* ── Custom Win98 title bar ── */
+    .titlebar {
+      background: linear-gradient(to right, #000080, #1084d0);
+      color: #ffffff;
+      display: flex; align-items: center;
+      padding: 2px 2px 2px 4px; height: 18px;
+      flex-shrink: 0;
+      -webkit-app-region: drag;
+      user-select: none;
+      position: absolute; top: 0; left: 0; right: 0;
+    }
+    .titlebar-icon { font-size: 12px; margin-right: 4px; }
+    .titlebar-title {
+      flex: 1; font-size: 11px; font-weight: bold;
+      font-family: "MS Sans Serif", Tahoma, Arial, sans-serif;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .titlebar-btns { display: flex; gap: 2px; padding-right: 2px; -webkit-app-region: no-drag; }
+    .titlebar-btn {
+      background: #c0c0c0; color: #000000;
+      border: 2px solid;
+      border-top-color: #ffffff; border-left-color: #ffffff;
+      border-right-color: #808080; border-bottom-color: #808080;
+      width: 16px; height: 14px; font-size: 9px; font-weight: bold;
+      cursor: pointer; padding: 0; line-height: 1;
+      font-family: "MS Sans Serif", Tahoma, Arial, sans-serif;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .titlebar-btn:active {
+      border-top-color: #808080; border-left-color: #808080;
+      border-right-color: #ffffff; border-bottom-color: #ffffff;
+    }
+    .titlebar-btn-close:hover { background: #aa0000; color: #ffffff; }
   </style>
 </head>
-<body>
+<body style="padding-top: 18px;">
+  <div class="titlebar">
+    <span class="titlebar-icon">&#128247;</span>
+    <span class="titlebar-title">Conexão WhatsApp</span>
+    <div class="titlebar-btns">
+      <button class="titlebar-btn titlebar-btn-close" id="btnWinClose" title="Fechar">&#x2715;</button>
+    </div>
+  </div>
   <div class="header">
     <h1>&#128247; Conexão WhatsApp</h1>
     <p>Gerencie a conexão com o WhatsApp Web</p>
@@ -172,6 +213,8 @@
   </div>
 
   <script>
+    document.getElementById('btnWinClose').addEventListener('click', () => waConnect.windowClose());
+
     const btn = document.getElementById('btnAction');
     const badge = document.getElementById('statusBadge');
     const statusDot = document.getElementById('statusDot');

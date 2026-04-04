@@ -61,28 +61,52 @@
 
     /* ── App window ── */
     .app {
-      max-width: 1240px;
-      margin: 0 auto;
+      width: 100%;
       padding: 0;
       background: #c0c0c0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Custom Win98 title bar ── */
+    .titlebar {
+      background: linear-gradient(to right, #000080, #1084d0);
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      padding: 2px 2px 2px 4px;
+      height: 18px;
+      flex-shrink: 0;
+      -webkit-app-region: drag;
+      user-select: none;
+    }
+    .titlebar-icon { font-size: 12px; margin-right: 4px; }
+    .titlebar-title {
+      flex: 1;
+      font-size: 11px; font-weight: bold;
+      font-family: "MS Sans Serif", Tahoma, Arial, sans-serif;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .titlebar-btns { display: flex; gap: 2px; padding-right: 2px; -webkit-app-region: no-drag; }
+    .titlebar-btn {
+      background: #c0c0c0; color: #000000;
       border: 2px solid;
       border-top-color: #ffffff; border-left-color: #ffffff;
       border-right-color: #808080; border-bottom-color: #808080;
-      box-shadow: 2px 2px 0 #404040;
-      min-height: 100vh;
-    }
-    .app::before {
-      content: 'WhatsApp Validator';
-      display: block;
-      background: linear-gradient(to right, #000080, #1084d0);
-      color: #ffffff;
+      width: 16px; height: 14px;
+      font-size: 9px; font-weight: bold;
+      cursor: pointer; padding: 0; line-height: 1;
       font-family: "MS Sans Serif", Tahoma, Arial, sans-serif;
-      font-size: 11px; font-weight: bold;
-      padding: 3px 6px;
-      letter-spacing: 0;
-      user-select: none;
+      display: flex; align-items: center; justify-content: center;
     }
-    .app-inner { padding: 6px 8px 8px; }
+    .titlebar-btn:active {
+      border-top-color: #808080; border-left-color: #808080;
+      border-right-color: #ffffff; border-bottom-color: #ffffff;
+    }
+    .titlebar-btn-close:hover { background: #aa0000; color: #ffffff; }
+
+    .app-inner { padding: 6px 8px 8px; flex: 1; }
 
     /* ── Layout ── */
     .grid {
@@ -386,6 +410,14 @@
     .badge-ok  { background: #008000; color: #ffffff; padding: 1px 6px; font-size: 10px; font-weight: bold; }
     .badge-err { background: #800000; color: #ffffff; padding: 1px 6px; font-size: 10px; font-weight: bold; }
 
+    /* ── Banco DB panel ── */
+    .db-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+    .db-form-grid .full { grid-column: 1 / -1; }
+    .db-field { display: flex; flex-direction: column; gap: 3px; }
+    .db-field label { font-size: 11px; font-weight: bold; color: #444; }
+    .connected-bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: #e8f8ef; border: 1px solid #9cd3b5; border-radius: 4px; }
+    .connected-dot { width: 10px; height: 10px; border-radius: 50%; background: #18794e; flex-shrink: 0; }
+
     /* ── Pagination ── */
     .pagination {
       display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
@@ -454,6 +486,16 @@
 </head>
 <body>
   <div class="app">
+    <div class="titlebar">
+      <span class="titlebar-icon">&#128247;</span>
+      <span class="titlebar-title">WhatsApp Validator</span>
+      <span id="titlebarVersion" style="font-size:10px;opacity:.75;margin-right:8px;"></span>
+      <div class="titlebar-btns">
+        <button class="titlebar-btn" id="btnWinMinimize" title="Minimizar">&#x5F;</button>
+        <button class="titlebar-btn" id="btnWinMaximize" title="Maximizar/Restaurar">&#x25A1;</button>
+        <button class="titlebar-btn titlebar-btn-close" id="btnWinClose" title="Fechar">&#x2715;</button>
+      </div>
+    </div>
   <div class="app-inner">
 
     <!-- ====== MODAL MAPEAMENTO DE COLUNAS ====== -->
@@ -547,9 +589,9 @@
           <label for="forceRevalidate" style="cursor:pointer;color:var(--text);font-size:13px;">Forçar validação (ignorar banco local)</label>
         </div>
 
-        <div class="row" style="gap:8px;align-items:center;">
-          <input type="checkbox" id="bankOnly" style="width:16px;height:16px;cursor:pointer;accent-color:var(--primary);" />
-          <label for="bankOnly" style="cursor:pointer;color:var(--text);font-size:13px;">Somente banco (sem consultar WhatsApp)</label>
+        <div class="row" style="gap:8px;align-items:center;" id="bankOnlyRow">
+          <input type="checkbox" id="bankOnly" style="width:16px;height:16px;cursor:pointer;accent-color:var(--primary);" disabled />
+          <label for="bankOnly" style="cursor:pointer;color:var(--muted);font-size:13px;" id="bankOnlyLabel">Somente banco (sem consultar WhatsApp) — <em>conecte o banco na aba Banco de Telefones</em></label>
         </div>
 
         <div id="statusBadge" class="badge warn">Aguardando conexão</div>
@@ -641,6 +683,54 @@
 
     <!-- ====== BANCO TAB ====== -->
     <div id="tab-banco" class="tab-panel">
+
+      <!-- Painel de conexão com o banco -->
+      <div class="card" id="dbPanelMain" style="margin-bottom:10px;">
+        <div id="dbFormWrapMain">
+          <div style="font-size:13px;font-weight:bold;margin-bottom:4px;">&#128274; Conectar ao banco de dados</div>
+          <div class="muted" style="font-size:11px;">Insira as credenciais para acessar o cache de números.</div>
+          <div class="db-form-grid">
+            <div class="db-field">
+              <label>Servidor (host)</label>
+              <input id="dbHost" type="text" placeholder="ex: db.supabase.co" autocomplete="off" />
+            </div>
+            <div class="db-field">
+              <label>Porta</label>
+              <input id="dbPort" type="number" value="6543" placeholder="6543" />
+            </div>
+            <div class="db-field">
+              <label>Banco (database)</label>
+              <input id="dbDatabase" type="text" value="postgres" placeholder="postgres" />
+            </div>
+            <div class="db-field">
+              <label>Usuário</label>
+              <input id="dbUser" type="text" placeholder="postgres" autocomplete="off" />
+            </div>
+            <div class="db-field full">
+              <label>Senha</label>
+              <input id="dbPassword" type="password" placeholder="••••••••" autocomplete="new-password" />
+            </div>
+            <div class="db-field full" style="flex-direction:row;align-items:center;gap:8px;">
+              <input id="dbSsl" type="checkbox" checked style="width:14px;height:14px;cursor:pointer;" />
+              <label for="dbSsl" style="cursor:pointer;font-size:11px;color:var(--text,#000);">Usar SSL</label>
+            </div>
+          </div>
+          <div style="margin-top:10px;display:flex;align-items:center;gap:10px;">
+            <button id="btnConnectDb" class="btn btn-primary">Conectar</button>
+            <span id="dbErrorMain" style="color:#b42318;font-size:12px;font-weight:bold;display:none;"></span>
+          </div>
+        </div>
+        <div id="dbConnectedWrapMain" style="display:none;">
+          <div class="connected-bar">
+            <div class="connected-dot"></div>
+            <span style="font-weight:bold;font-size:13px;flex:1;">Banco conectado</span>
+            <button id="btnDisconnectDb" class="btn btn-secondary" style="padding:4px 10px;font-size:12px;">Desconectar</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Seção de busca (visível apenas quando conectado) -->
+      <div id="bancoSearchSection" style="display:none;">
       <div class="card">
         <div class="row" style="margin-bottom:12px;flex-wrap:wrap;gap:8px;">
           <input id="cacheSearch" type="text" placeholder="Buscar número..." style="flex:1;min-width:180px;" />
@@ -670,7 +760,8 @@
             <button id="btnPageJump" class="page-btn">OK</button>
           </div>
         </div>
-      </div>
+      </div><!-- .card busca -->
+      </div><!-- #bancoSearchSection -->
     </div><!-- #tab-banco -->
 
     <!-- ====== WHATSAPP TAB ====== -->
@@ -694,6 +785,14 @@
   </div><!-- .app -->
 
   <script>
+    // ── Controles da titlebar ─────────────────────────────────
+    document.getElementById('btnWinMinimize').addEventListener('click', () => waApp.windowMinimize());
+    document.getElementById('btnWinMaximize').addEventListener('click', () => waApp.windowMaximize());
+    document.getElementById('btnWinClose').addEventListener('click',    () => waApp.windowClose());
+    waApp.getAppVersion().then(v => {
+      document.getElementById('titlebarVersion').textContent = 'v' + v;
+    });
+
     // ═══════════════════════════════════════════════════════════
     //  REFERÊNCIAS DOM — elementos acessados repetidamente
     // ═══════════════════════════════════════════════════════════
@@ -757,6 +856,62 @@
     let selectedFiles = [];      // arquivos TXT a validar: [{ filePath, count }]
     let etaStartTime    = null;  // ponto de início para cálculo do ETA
     let etaStartCurrent = 0;     // posição no início da janela de cálculo do ETA
+
+    // ── Estado da conexão com o banco ──────────────────────────
+    function setDbConnectedState(connected) {
+      const chk   = document.getElementById('bankOnly');
+      const label = document.getElementById('bankOnlyLabel');
+      if (connected) {
+        chk.disabled    = false;
+        label.style.color = 'var(--text)';
+        label.innerHTML = 'Somente banco (sem consultar WhatsApp)';
+      } else {
+        chk.disabled   = true;
+        chk.checked    = false;
+        label.style.color = 'var(--muted)';
+        label.innerHTML = 'Somente banco (sem consultar WhatsApp) — <em>conecte o banco na aba Banco de Telefones</em>';
+      }
+      // Painel de conexão da aba banco
+      document.getElementById('dbFormWrapMain').style.display      = connected ? 'none' : '';
+      document.getElementById('dbConnectedWrapMain').style.display = connected ? '' : 'none';
+      document.getElementById('bancoSearchSection').style.display  = connected ? '' : 'none';
+      if (connected) {
+        bancoRunSearch();
+      }
+    }
+
+    document.getElementById('btnConnectDb').addEventListener('click', async () => {
+      const btn   = document.getElementById('btnConnectDb');
+      const errEl = document.getElementById('dbErrorMain');
+      errEl.style.display = 'none';
+      btn.disabled = true;
+      btn.textContent = 'Conectando...';
+      const res = await window.waApp.connectDb({
+        host:     document.getElementById('dbHost').value.trim(),
+        port:     document.getElementById('dbPort').value,
+        database: document.getElementById('dbDatabase').value.trim(),
+        user:     document.getElementById('dbUser').value.trim(),
+        password: document.getElementById('dbPassword').value,
+        ssl:      document.getElementById('dbSsl').checked
+      });
+      btn.disabled = false;
+      btn.textContent = 'Conectar';
+      if (!res.ok) {
+        errEl.textContent = res.error;
+        errEl.style.display = '';
+      }
+      // Se ok, onDbStatus disparará setDbConnectedState(true)
+    });
+
+    document.getElementById('btnDisconnectDb').addEventListener('click', async () => {
+      await window.waApp.disconnectDb();
+    });
+
+    waApp.getDbStatus().then(({ connected }) => setDbConnectedState(connected));
+    waApp.onDbStatus(({ connected }) => {
+      setDbConnectedState(connected);
+      logLine(connected ? 'Banco de dados conectado.' : 'Banco de dados desconectado.', connected ? 'log-ok' : 'log-warn');
+    });
 
     // ── Exclusividade mútua entre checkboxes de modo ──────────
     // "Forçar validação" e "Somente banco" são mutuamente exclusivos

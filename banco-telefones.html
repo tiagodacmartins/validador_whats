@@ -73,16 +73,117 @@
     .page-btn:hover { background: var(--primary); color: white; border-color: var(--primary); }
     .page-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
     .page-btn:disabled { opacity: .4; cursor: default; }
-  </style>
-</head>
+    .db-panel { margin-bottom: 18px; }
+    .db-form-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px;
+    }
+    .db-form-grid .full { grid-column: 1 / -1; }
+    .field { display: flex; flex-direction: column; gap: 4px; }
+    .field label { font-size: 12px; font-weight: 700; color: var(--muted); }
+    .field input { border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px; background: var(--panel-2); color: var(--text); font-size: 13px; outline: none; }
+    .field input:focus { border-color: var(--primary); }
+    .connected-bar {
+      display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+      background: var(--success-bg); border: 1px solid #9cd3b5; border-radius: 10px;
+    }
+    .connected-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--success-fg); flex-shrink: 0; }
+    .error-msg { color: var(--error-fg); font-size: 13px; margin-top: 8px; font-weight: 600; }
+
+    /* ── Custom Win98 title bar ── */
+    .titlebar {
+      background: linear-gradient(to right, #000080, #1084d0);
+      color: #ffffff;
+      display: flex; align-items: center;
+      padding: 2px 2px 2px 4px; height: 18px;
+      flex-shrink: 0;
+      -webkit-app-region: drag;
+      user-select: none;
+    }
+    .titlebar-icon { font-size: 12px; margin-right: 4px; }
+    .titlebar-title {
+      flex: 1; font-size: 11px; font-weight: bold;
+      font-family: "MS Sans Serif", Tahoma, Arial, sans-serif;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .titlebar-btns { display: flex; gap: 2px; padding-right: 2px; -webkit-app-region: no-drag; }
+    .titlebar-btn {
+      background: #c0c0c0; color: #000000;
+      border: 2px solid;
+      border-top-color: #ffffff; border-left-color: #ffffff;
+      border-right-color: #808080; border-bottom-color: #808080;
+      width: 16px; height: 14px; font-size: 9px; font-weight: bold;
+      cursor: pointer; padding: 0; line-height: 1;
+      font-family: "MS Sans Serif", Tahoma, Arial, sans-serif;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .titlebar-btn:active {
+      border-top-color: #808080; border-left-color: #808080;
+      border-right-color: #ffffff; border-bottom-color: #ffffff;
+    }
+    .titlebar-btn-close:hover { background: #aa0000; color: #ffffff; }
+  
 <body>
   <div class="app">
+    <div class="titlebar">
+      <span class="titlebar-icon">&#128222;</span>
+      <span class="titlebar-title">Banco de Telefones</span>
+      <div class="titlebar-btns">
+        <button class="titlebar-btn titlebar-btn-close" id="btnWinClose" title="Fechar">&#x2715;</button>
+      </div>
+    </div>
     <section class="hero">
       <h1>&#128222; Banco de Telefones</h1>
       <span id="heroCount" style="background:rgba(255,255,255,.18);border-radius:999px;padding:6px 14px;font-size:14px;font-weight:700;">...</span>
     </section>
 
-    <section class="card">
+    <!-- Painel de conexão com o banco -->
+    <section class="card db-panel" id="dbPanel">
+      <!-- Estado: não conectado -->
+      <div id="dbFormWrap">
+        <div style="font-size:14px;font-weight:700;margin-bottom:4px;">&#128274; Conectar ao banco de dados</div>
+        <div class="muted" style="font-size:13px;">Insira as credenciais para acessar o cache de números.</div>
+        <div class="db-form-grid">
+          <div class="field">
+            <label>Servidor (host)</label>
+            <input id="dbHost" type="text" placeholder="ex: db.supabase.co" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>Porta</label>
+            <input id="dbPort" type="number" value="6543" placeholder="6543" />
+          </div>
+          <div class="field">
+            <label>Banco (database)</label>
+            <input id="dbDatabase" type="text" value="postgres" placeholder="postgres" />
+          </div>
+          <div class="field">
+            <label>Usuário</label>
+            <input id="dbUser" type="text" placeholder="postgres" autocomplete="off" />
+          </div>
+          <div class="field full">
+            <label>Senha</label>
+            <input id="dbPassword" type="password" placeholder="••••••••" autocomplete="new-password" />
+          </div>
+          <div class="field full" style="flex-direction:row;align-items:center;gap:8px;">
+            <input id="dbSsl" type="checkbox" checked style="width:16px;height:16px;cursor:pointer;accent-color:var(--primary);" />
+            <label for="dbSsl" style="cursor:pointer;font-size:13px;color:var(--text);">Usar SSL</label>
+          </div>
+        </div>
+        <div style="margin-top:12px;display:flex;align-items:center;gap:10px;">
+          <button id="btnConnectDb" class="btn btn-primary">Conectar</button>
+          <span id="dbError" class="error-msg" style="display:none;"></span>
+        </div>
+      </div>
+      <!-- Estado: conectado -->
+      <div id="dbConnectedWrap" style="display:none;">
+        <div class="connected-bar">
+          <div class="connected-dot"></div>
+          <span style="font-weight:700;font-size:14px;flex:1;">Banco conectado</span>
+          <button id="btnDisconnectDb" class="btn btn-secondary" style="padding:6px 12px;font-size:13px;">Desconectar</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="searchSection" style="display:none;">
       <div class="row" style="margin-bottom:12px;">
         <input id="cacheSearch" type="text" placeholder="Buscar número..." style="flex:1;min-width:180px;" />
         <select id="cacheFilter">
@@ -119,11 +220,63 @@
   </div>
 
   <script>
+    document.getElementById('btnWinClose').addEventListener('click', () => banco.windowClose());
+
     const PAGE_SIZE = 100;
     let currentPage = 1;
     let currentTotal = 0;
     let currentQuery = '';
     let currentFilter = 'all';
+
+    // ── Estado da conexão com o banco ──────────────────────────
+    function setDbConnected(connected) {
+      document.getElementById('dbFormWrap').style.display      = connected ? 'none' : '';
+      document.getElementById('dbConnectedWrap').style.display = connected ? '' : 'none';
+      document.getElementById('searchSection').style.display   = connected ? '' : 'none';
+      if (connected) {
+        loadCount();
+        runSearch();
+      } else {
+        document.getElementById('heroCount').textContent = '—';
+        document.getElementById('cacheBody').innerHTML = '';
+        document.getElementById('cacheCount').textContent = '';
+        document.getElementById('pagination').style.display = 'none';
+      }
+    }
+
+    document.getElementById('btnConnectDb').addEventListener('click', async () => {
+      const btn = document.getElementById('btnConnectDb');
+      const errEl = document.getElementById('dbError');
+      errEl.style.display = 'none';
+      btn.disabled = true;
+      btn.textContent = 'Conectando...';
+      const res = await window.banco.connectDb({
+        host:     document.getElementById('dbHost').value.trim(),
+        port:     document.getElementById('dbPort').value,
+        database: document.getElementById('dbDatabase').value.trim(),
+        user:     document.getElementById('dbUser').value.trim(),
+        password: document.getElementById('dbPassword').value,
+        ssl:      document.getElementById('dbSsl').checked
+      });
+      btn.disabled = false;
+      btn.textContent = 'Conectar';
+      if (!res.ok) {
+        errEl.textContent = res.error;
+        errEl.style.display = '';
+      }
+      // Se ok, o broadcastDbStatus do main vai acionar onDbStatus → setDbConnected
+    });
+
+    document.getElementById('btnDisconnectDb').addEventListener('click', async () => {
+      await window.banco.disconnectDb();
+    });
+
+    window.banco.onDbStatus(({ connected }) => setDbConnected(connected));
+
+    // Verifica estado inicial ao abrir a janela
+    window.banco.getDbStatus().then(({ connected }) => setDbConnected(connected));
+
+    // ─────────────────────────────────────────────────────────
 
     function escapeHtml(v) {
       return String(v || '')
@@ -238,11 +391,6 @@
     }
 
     document.getElementById('btnCacheSearch').addEventListener('click', runSearch);
-    document.getElementById('cacheSearch').addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(); });
-    document.getElementById('btnPageJump').addEventListener('click', () => {
-      const v = parseInt(document.getElementById('pageJump').value, 10);
-      if (v) goToPage(v);
-    });
     document.getElementById('pageJump').addEventListener('keydown', e => {
       if (e.key === 'Enter') document.getElementById('btnPageJump').click();
     });
@@ -264,8 +412,13 @@
       }
     });
 
-    loadCount();
-    runSearch();
+    // Adiciona os listeners que faltam (busca e paginação)
+    document.getElementById('btnCacheSearch').addEventListener('click', runSearch);
+    document.getElementById('cacheSearch').addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(); });
+    document.getElementById('btnPageJump').addEventListener('click', () => {
+      const v = parseInt(document.getElementById('pageJump').value, 10);
+      if (v) goToPage(v);
+    });
   </script>
 </body>
 </html>
