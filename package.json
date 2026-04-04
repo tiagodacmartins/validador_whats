@@ -2,6 +2,8 @@
   "name": "whatsapp-validator-gui",
   "version": "1.1.0",
   "description": "Validador de WhatsApp com interface gráfica, delay aleatório, lotes e suporte a TXT delimitado por ;",
+  "author": "Tiago Martins",
+  "license": "MIT",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
