@@ -244,7 +244,7 @@ Todo texto inserido via `.innerHTML` passa por `escapeHtml()` para evitar XSS.
 
 ---
 
-## Desenvolvi mento
+## Desenvolvimento
 
 ### Estrutura de pastas
 
