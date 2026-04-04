@@ -1,70 +1,112 @@
-\# WhatsApp Validator GUI
+# WhatsApp Validator GUI
 
+Aplicativo desktop para validar números de telefone no WhatsApp em lote, com suporte a múltiplas contas simultâneas e cache em banco de dados PostgreSQL.
 
+---
 
-\## O que este projeto faz
+## Requisitos
 
-\- Lê TXT simples ou TXT com colunas separadas por `;`
+- **Node.js 18+** — [nodejs.org](https://nodejs.org)
+- **Microsoft Edge** instalado (já vem no Windows 10/11)
+- Uma conta WhatsApp ativa para escaneamento do QR Code
 
-\- No formato delimitado, usa a primeira coluna como telefone
+---
 
-\- Normaliza o telefone para consulta
+## Instalação
 
-\- Valida via WhatsApp Web (`getNumberId`)
-
-\- Exporta:
-
-&#x20; - `whatsapp\_validos.txt` com \*\*somente as linhas originais válidas\*\*, sem cabeçalho
-
-&#x20; - `whatsapp\_validos.csv` com relatório completo
-
-
-
-\## Formato suportado
-
-
-
-Exemplo de linha:
-
-
-
-5511951331472;4226136775;NOME LOJA;RESPONSAVEL;CARTEIRA;EMPRESA;CNPJ
-
-
-
-A saída TXT manterá a linha inteira acima apenas se o telefone da primeira coluna tiver WhatsApp.
-
-
-
-\## Anti-risco incluído
-
-\- Delay aleatório mínimo/máximo
-
-\- Lote configurável
-
-\- Pausa automática entre lotes
-
-\- Botão para parar
-
-
-
-\## Como rodar
-
-
+### Opção 1 — Clonar o repositório
 
 ```bash
-
+git clone https://github.com/tiagodacmartins/validador_whats.git
+cd validador_whats
 npm install
-
 npm start
-
 ```
 
+### Opção 2 — Baixar o ZIP
 
+1. Clique em **Code → Download ZIP** no GitHub
+2. Extraia o arquivo
+3. Abra um terminal na pasta extraída
+4. Execute:
 
-\## Requisitos
+```bash
+npm install
+npm start
+```
 
-\- Node.js 18+
+---
 
-\- Chrome/Chromium instalado para o WhatsApp Web rodar via Puppeteer
+## Primeiro uso
+
+### 1. Conectar o WhatsApp
+
+Na aba **WhatsApp**, clique em **Adicionar conta**. Um QR Code será exibido — escaneie pelo celular em **WhatsApp → Dispositivos conectados → Conectar dispositivo**.
+
+Aguarde a mensagem *"Conta conectada e pronta"* no log.
+
+### 2. Selecionar o arquivo de entrada
+
+Na aba **Validador**, clique em **Escolher arquivo(s)** ou arraste arquivos `.txt` para a área indicada.
+
+**Formatos aceitos:**
+- Uma linha por número: `5511999990000`
+- Colunas separadas por `;` — o telefone deve estar na **primeira coluna**:  
+  `5511999990000;Nome do Cliente;Empresa`
+
+O número deve estar no formato brasileiro com DDD (10 ou 11 dígitos). O prefixo `55` é adicionado automaticamente se ausente.
+
+### 3. Configurar e iniciar
+
+Ajuste os parâmetros se necessário (os padrões já são seguros):
+
+| Campo | Padrão | Descrição |
+|---|---|---|
+| Delay mínimo | 2000 ms | Intervalo mínimo entre consultas |
+| Delay máximo | 5000 ms | Intervalo máximo entre consultas |
+| Tamanho do lote | 150 | Consultas antes de pausar |
+| Pausa entre lotes | 30000 ms | Tempo de pausa entre lotes |
+
+Clique em **Iniciar validação**.
+
+### 4. Resultados
+
+Ao final (ou ao clicar em **Parar**), os arquivos são salvos automaticamente na pasta `output/` ou no diretório escolhido:
+
+- **`.txt`** — linhas originais onde o número **tem** WhatsApp (sem cabeçalho)
+- **`.csv`** — relatório completo com todos os números e status
+
+---
+
+## Banco de dados (opcional)
+
+O app suporta cache em PostgreSQL (ex: Supabase) para evitar revalidar números já consultados.
+
+Na aba **Banco de Telefones**, preencha as credenciais de conexão. Após conectar, o banco é reutilizado automaticamente nas próximas sessões.
+
+**Tabela necessária:**
+
+```sql
+CREATE TABLE phone_cache (
+  phone      TEXT PRIMARY KEY,
+  has_wa     BOOLEAN NOT NULL,
+  checked_at TIMESTAMP NOT NULL
+);
+```
+
+---
+
+## Múltiplas contas
+
+Na aba **WhatsApp**, clique em **Adicionar conta** para incluir mais contas. O validador distribui as consultas em round-robin entre todas as contas conectadas, reduzindo o risco de bloqueio.
+
+---
+
+## Gerar distribuível (ZIP)
+
+```bash
+npm run dist
+```
+
+Gera `Validador-WhatsApp-win-x64.zip` na raiz do projeto.
 
