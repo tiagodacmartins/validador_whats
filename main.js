@@ -238,6 +238,13 @@ function getConnectedClients() {
   return [...accounts.values()].filter(a => a.isReady && a.client);
 }
 
+function getAccountIdByClient(client) {
+  for (const [id, acc] of accounts.entries()) {
+    if (acc?.client === client) return id;
+  }
+  return null;
+}
+
 /**
  * Seleciona o próximo cliente usando round-robin,
  * distribuindo as consultas uniformemente entre as contas conectadas.
@@ -392,9 +399,10 @@ function getNumberIdWithTimeout(client, normalized, timeoutMs = 20000) {
  * @param {string} normalized  Número normalizado no formato E.164.
  */
 async function getNumberIdWithRetry(normalized, clientOverride = null, maxRetries = 3, retryDelayMs = 5000) {
+  let preferredClient = clientOverride;
   let lastErr;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
-    const client = clientOverride || getNextClient();
+    const client = preferredClient || getNextClient();
     if (!client) throw new Error('Nenhuma conta WhatsApp conectada.');
     try {
       return await getNumberIdWithTimeout(client, normalized);
@@ -406,11 +414,37 @@ async function getNumberIdWithRetry(normalized, clientOverride = null, maxRetrie
         || msg.includes('Target closed')
         || msg.includes('Session closed')
         || msg.includes('getNumberId timeout');
+      const isClientUnavailable = msg.includes('Session closed')
+        || msg.includes('Target closed')
+        || msg.includes('Protocol error');
+
+      // Se o worker estava preso a uma conta e ela caiu, libera para usar outra conta pronta.
+      if (preferredClient && isClientUnavailable) {
+        const accountId = getAccountIdByClient(client);
+        broadcastWaStatus({
+          type: 'warn',
+          message: `Conta ${accountId || '(desconhecida)'} indisponível durante validação. Redistribuindo consultas para contas conectadas.`
+        });
+        preferredClient = null;
+      }
+
       if (isTransient) {
         console.warn(`[getNumberId] Tentativa ${attempt + 1}/${maxRetries} falhou: ${msg.split('\n')[0]}. Aguardando ${retryDelayMs}ms...`);
         await sleep(retryDelayMs);
         continue;
       }
+
+      if (preferredClient) {
+        const accountId = getAccountIdByClient(client);
+        broadcastWaStatus({
+          type: 'warn',
+          message: `Falha na conta ${accountId || '(desconhecida)'} durante validação. Tentando outra conta conectada.`
+        });
+        preferredClient = null;
+        await sleep(retryDelayMs);
+        continue;
+      }
+
       throw err; // erro não recuperável — propaga imediatamente
     }
   }
@@ -1158,9 +1192,9 @@ handleIpc('start-validation', async (_event, payload) => {
       await initializeOutputWriters(writers, columnMapping, appendMode);
 
       const connectedAccts = bankOnly ? [] : getConnectedClients();
-      const workerClients = connectedAccts.length
-        ? connectedAccts.slice(0, validationSemaphore.max).map(acc => acc.client)
-        : [null];
+      const workerCount = connectedAccts.length
+        ? Math.min(connectedAccts.length, validationSemaphore.max)
+        : 1;
       const lineIterator = streamNonEmptyLines(inputPath, lineStart)[Symbol.asyncIterator]();
       let processedRealCount = fileIdx === startFileIndex ? processedInBatch : 0;
       let batchPausePromise = null;
@@ -1176,7 +1210,7 @@ handleIpc('start-validation', async (_event, payload) => {
         return done ? null : value;
       };
 
-      const runWorker = async client => {
+      const runWorker = async () => {
         await validationSemaphore.acquire();
         try {
           while (true) {
@@ -1214,7 +1248,7 @@ handleIpc('start-validation', async (_event, payload) => {
               };
             } else {
               try {
-                const result = await getNumberIdWithRetry(normalized, client);
+                const result = await getNumberIdWithRetry(normalized);
                 const exists = !!result;
                 const checkedAt = nowBRT();
                 phoneCache[normalized] = { hasWa: exists, checkedAt };
@@ -1264,7 +1298,7 @@ handleIpc('start-validation', async (_event, payload) => {
         }
       };
 
-      await Promise.all(workerClients.map(client => runWorker(client)));
+      await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
       if (typeof lineIterator.return === 'function') await lineIterator.return();
       await flushPendingRows(writeState, writers, columnMapping);
       await closeOutputWriters(writers);
