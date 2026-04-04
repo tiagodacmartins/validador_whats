@@ -1210,6 +1210,8 @@ handleIpc('start-validation', async (_event, payload) => {
       const lineIterator = streamNonEmptyLines(inputPath, lineStart)[Symbol.asyncIterator]();
       let processedRealCount = fileIdx === startFileIndex ? processedInBatch : 0;
       let batchPausePromise = null;
+      // Delay global compartilhado entre todos os workers para garantir o intervalo configurado
+      let nextSlotAt = 0;
       const writeState = {
         nextWriteIndex: lineStart,
         processedCount: lineStart,
@@ -1299,9 +1301,18 @@ handleIpc('start-validation', async (_event, payload) => {
               if (processedRealCount >= Number(batchSize) && !batchPausePromise) {
                 broadcastWaStatus({ type: 'pause', message: `Pausa de lote por ${batchPauseMs}ms.` });
                 processedRealCount = 0;
-                batchPausePromise = sleep(Number(batchPauseMs)).then(() => { batchPausePromise = null; });
+                batchPausePromise = sleep(Number(batchPauseMs)).then(() => {
+                  nextSlotAt = 0;
+                  batchPausePromise = null;
+                });
               } else if (!batchPausePromise) {
-                await sleep(randBetween(minDelayMs, maxDelayMs));
+                // Reserva o próximo slot de tempo de forma atômica para todos os workers
+                const now = Date.now();
+                const delay = randBetween(minDelayMs, maxDelayMs);
+                const waitStart = Math.max(now, nextSlotAt);
+                nextSlotAt = waitStart + delay;
+                const waitMs = waitStart - now + delay;
+                if (waitMs > 0) await sleep(waitMs);
               }
             }
           }
