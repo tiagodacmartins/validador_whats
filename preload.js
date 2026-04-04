@@ -91,5 +91,9 @@ contextBridge.exposeInMainWorld('waApp', {
   /** Registra callback para receber progresso da validação em lote. */
   onProgress: (callback) => ipcRenderer.on('validation-progress',  (_e, data) => callback(data)),
   /** Registra callback para receber atualizações do status do banco. */
-  onDbStatus: (callback) => ipcRenderer.on('db-status', (_e, data) => callback(data))
+  onDbStatus: (callback) => ipcRenderer.on('db-status', (_e, data) => callback(data)),
+
+  // ── Dashboard ────────────────────────────────────────────────
+  /** Retorna estatísticas por conta e totais diários do banco. */
+  getDashboardStats: () => ipcRenderer.invoke('get-dashboard-stats')
 });

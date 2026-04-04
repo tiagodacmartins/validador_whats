@@ -45,6 +45,10 @@ const accounts = new Map();
 let rrIndex       = 0; // índice do round-robin para distribuição das consultas
 let nextAccountId = 1;
 
+// ── Estatísticas por conta (sessão atual) ─────────────────────
+// Map<id, { total: number, history: number[] }> onde history são timestamps Unix
+const accountStats = new Map();
+
 // ── Semaphore para limitar concorrência ──────────────────────
 class Semaphore {
   constructor(max) { this.max = max; this.current = 0; this.queue = []; }
@@ -405,7 +409,15 @@ async function getNumberIdWithRetry(normalized, clientOverride = null, maxRetrie
     const client = preferredClient || getNextClient();
     if (!client) throw new Error('Nenhuma conta WhatsApp conectada.');
     try {
-      return await getNumberIdWithTimeout(client, normalized);
+      const result = await getNumberIdWithTimeout(client, normalized);
+      const accId = getAccountIdByClient(client);
+      if (accId) {
+        const s = accountStats.get(accId) ?? { total: 0, history: [] };
+        s.total++;
+        s.history.push(Date.now());
+        accountStats.set(accId, s);
+      }
+      return result;
     } catch (err) {
       lastErr = err;
       const msg = err.message || String(err);
@@ -1405,6 +1417,39 @@ ipcMain.on('win-maximize', (e) => {
 });
 ipcMain.on('win-close', (e) => BrowserWindow.fromWebContents(e.sender)?.close());
 ipcMain.handle('get-app-version', () => app.getVersion());
+
+// Retorna estatísticas de uso por conta e totais diários do banco
+ipcMain.handle('get-dashboard-stats', async () => {
+  const now = Date.now();
+  const accts = [...accountStats.entries()].map(([id, s]) => {
+    const acc = accounts.get(id);
+    return {
+      id,
+      name: acc?.info?.pushname || acc?.info?.wid?.user || id,
+      total:    s.total,
+      lastHour: s.history.filter(t => t > now - 3600000).length,
+      lastDay:  s.history.filter(t => t > now - 86400000).length
+    };
+  });
+
+  let dailyStats = [];
+  if (pool) {
+    try {
+      const { rows } = await pool.query(
+        `SELECT DATE(checked_at)::text AS day,
+                COUNT(*)::int AS total,
+                SUM(CASE WHEN has_wa     THEN 1 ELSE 0 END)::int AS valid,
+                SUM(CASE WHEN NOT has_wa THEN 1 ELSE 0 END)::int AS invalid
+         FROM phone_cache GROUP BY 1 ORDER BY 1 DESC LIMIT 30`
+      );
+      dailyStats = rows;
+    } catch (err) {
+      console.warn('[get-dashboard-stats] Erro ao buscar stats diários:', err.message);
+    }
+  }
+
+  return { ok: true, accountStats: accts, dailyStats };
+});
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);

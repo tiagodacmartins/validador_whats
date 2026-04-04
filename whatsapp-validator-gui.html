@@ -526,6 +526,7 @@
       <button class="tab active" data-tab="validador">&#9654; Validador</button>
       <button class="tab" data-tab="banco" id="tabBtnBanco">&#128222; Banco de Telefones</button>
       <button class="tab" data-tab="whatsapp" id="tabBtnWa">&#128247; WhatsApp</button>
+      <button class="tab" data-tab="dashboard" id="tabBtnDash">&#128202; Dashboard</button>
     </div>
 
     <div id="tab-validador" class="tab-panel active">
@@ -780,6 +781,61 @@
       </div>
     </div><!-- #tab-whatsapp -->
 
+    <!-- ====== DASHBOARD TAB ====== -->
+    <div id="tab-dashboard" class="tab-panel" style="overflow-y:auto;">
+      <!-- Tiles de resumo da sessão -->
+      <div class="stats" id="dashTiles" style="margin-bottom:6px;">
+        <div class="stat"><label>Total processados</label><strong id="dsTotalProc">—</strong></div>
+        <div class="stat"><label>Com WhatsApp</label><strong id="dsValidPct" style="color:#006600;">—</strong></div>
+        <div class="stat"><label>Sem WhatsApp</label><strong id="dsInvalidPct" style="color:#800000;">—</strong></div>
+        <div class="stat"><label>Erros</label><strong id="dsErrorPct" style="color:#808000;">—</strong></div>
+      </div>
+
+      <!-- Histórico de runs + por conta -->
+      <div style="display:flex;gap:6px;margin-bottom:6px;align-items:flex-start;">
+        <div class="card" style="flex:3;overflow:hidden;min-width:0;">
+          <h2>Histórico de Validações (sessão)</h2>
+          <div class="table-wrap">
+            <table>
+              <thead><tr>
+                <th>Arquivo(s)</th><th>Total</th><th>Válidos</th><th>Inválidos</th>
+                <th>Erros</th><th>Taxa</th><th>Duração</th><th>Médio/linha</th>
+              </tr></thead>
+              <tbody id="dashRunTbody"><tr><td colspan="8" style="color:#808080;text-align:center;">Nenhuma validação concluída nesta sessão.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card" style="flex:1;overflow:hidden;min-width:0;">
+          <h2>Por Conta (sessão)</h2>
+          <div class="table-wrap">
+            <table>
+              <thead><tr>
+                <th>Conta</th><th>Total</th><th>Últ. 1h</th><th>Últ. 24h</th>
+              </tr></thead>
+              <tbody id="dashAcctTbody"><tr><td colspan="4" style="color:#808080;text-align:center;">Sem dados.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Por dia (banco) -->
+      <div class="card" style="overflow:hidden;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+          <h2 style="margin:0;">Por Dia (banco de dados)</h2>
+          <button class="btn btn-secondary" id="btnRefreshDash" style="padding:2px 8px;font-size:11px;">&#8635; Atualizar</button>
+        </div>
+        <div id="dashDailyNote" class="help" style="display:none;"></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Data</th><th>Consultados</th><th>Com WhatsApp</th><th>Sem WhatsApp</th><th>Taxa %</th>
+            </tr></thead>
+            <tbody id="dashDailyTbody"><tr><td colspan="5" style="color:#808080;text-align:center;">Aguardando…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div><!-- #tab-dashboard -->
+
   </div><!-- .app-inner -->
   </div><!-- .app -->
 
@@ -1019,6 +1075,9 @@
     // ═══════════════════════════════════════════════════════════
 
     let paused = false; // true quando o usuário clicou em "Pausar" (aguardando resposta do main)
+
+    // Histórico de runs concluídos nesta sessão
+    const sessionRuns = [];
 
     /**
      * Alterna a interface entre modo "em validação" e modo "ocioso".
@@ -1278,6 +1337,16 @@
         resultInfo.innerHTML = `ZIP: ${escapeHtml(res.zipOut)} <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px;margin-left:8px;" id="btnOpenFolder">&#128193; Abrir pasta</button>`;
         document.getElementById('btnOpenFolder').onclick = () => window.waApp.openPath(res.zipOut);
         logLine(`Concluído! ${res.valid} números com WhatsApp de ${res.total} total. ZIP: ${res.zipOut}`, 'log-ok');
+        sessionRuns.push({
+          files:      selectedFiles.map(f => f.filePath.split(/[\\/]/).pop()).join(', '),
+          total:      res.total,
+          valid:      state.valid,
+          invalid:    state.invalid,
+          format:     state.format,
+          error:      state.error,
+          cached:     state.cached,
+          durationMs: elapsedMs
+        });
         if (typeof Notification !== 'undefined') {
           new Notification('Validação concluída', { body: `${res.valid} números com WhatsApp em ${selectedFiles.length} arquivo(s).` });
         }
@@ -1420,10 +1489,108 @@
     function switchTab(name) {
       document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
       document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + name));
-      if (name === 'banco') bancoRunSearch();
-      if (name === 'whatsapp') waTabLoad();
+      if (name === 'banco')     bancoRunSearch();
+      if (name === 'whatsapp')  waTabLoad();
+      if (name === 'dashboard') dashboardLoad();
     }
     document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
+
+    // ═══════════════════════════════════════════════════════════
+    //  ABA DASHBOARD
+    // ═══════════════════════════════════════════════════════════
+
+    function fmtMs(ms) {
+      if (!ms || ms < 0) return '—';
+      const s = Math.floor(ms / 1000);
+      if (s < 60) return s + 's';
+      const m = Math.floor(s / 60);
+      return `${m}m ${s % 60}s`;
+    }
+    function pct(n, total) {
+      return total ? (n / total * 100).toFixed(1) + '%' : '—';
+    }
+
+    async function dashboardLoad() {
+      // ── Tiles de resumo ──────────────────────────────────────
+      const totals = sessionRuns.reduce((acc, r) => {
+        acc.total   += r.total;
+        acc.valid   += r.valid;
+        acc.invalid += r.invalid;
+        acc.error   += r.error;
+        return acc;
+      }, { total: 0, valid: 0, invalid: 0, error: 0 });
+
+      document.getElementById('dsTotalProc').textContent  = totals.total.toLocaleString('pt-BR');
+      document.getElementById('dsValidPct').textContent   = pct(totals.valid,   totals.total);
+      document.getElementById('dsInvalidPct').textContent = pct(totals.invalid, totals.total);
+      document.getElementById('dsErrorPct').textContent   = pct(totals.error,   totals.total);
+
+      // ── Histórico de runs ────────────────────────────────────
+      const runTbody = document.getElementById('dashRunTbody');
+      if (sessionRuns.length === 0) {
+        runTbody.innerHTML = '<tr><td colspan="8" style="color:#808080;text-align:center;">Nenhuma validação concluída nesta sessão.</td></tr>';
+      } else {
+        runTbody.innerHTML = '';
+        for (const r of [...sessionRuns].reverse()) {
+          const nonCached  = r.total - r.cached;
+          const avgMs      = nonCached > 0 ? Math.round(r.durationMs / nonCached) : null;
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(r.files)}">${escapeHtml(r.files)}</td>
+            <td>${r.total.toLocaleString('pt-BR')}</td>
+            <td style="color:#006600;font-weight:bold;">${r.valid.toLocaleString('pt-BR')}</td>
+            <td style="color:#800000;">${r.invalid.toLocaleString('pt-BR')}</td>
+            <td style="color:#808000;">${r.error.toLocaleString('pt-BR')}</td>
+            <td>${pct(r.valid, r.total)}</td>
+            <td>${fmtMs(r.durationMs)}</td>
+            <td>${avgMs != null ? fmtMs(avgMs) : '—'}</td>
+          `;
+          runTbody.appendChild(tr);
+        }
+      }
+
+      // ── Por conta ────────────────────────────────────────────
+      const acctTbody = document.getElementById('dashAcctTbody');
+      const stats = await window.waApp.getDashboardStats();
+      if (!stats.ok || !stats.accountStats.length) {
+        acctTbody.innerHTML = '<tr><td colspan="4" style="color:#808080;text-align:center;">Sem dados.</td></tr>';
+      } else {
+        acctTbody.innerHTML = '';
+        for (const a of stats.accountStats) {
+          const tr = document.createElement('tr');
+          const label = a.name !== a.id ? `${escapeHtml(a.name)}<br><span style="font-size:10px;color:#808080;">${escapeHtml(a.id)}</span>` : escapeHtml(a.id);
+          tr.innerHTML = `<td>${label}</td><td>${a.total.toLocaleString('pt-BR')}</td><td>${a.lastHour.toLocaleString('pt-BR')}</td><td>${a.lastDay.toLocaleString('pt-BR')}</td>`;
+          acctTbody.appendChild(tr);
+        }
+      }
+
+      // ── Por dia (banco) ──────────────────────────────────────
+      const dailyTbody  = document.getElementById('dashDailyTbody');
+      const dailyNote   = document.getElementById('dashDailyNote');
+      if (!stats.ok || !stats.dailyStats.length) {
+        dailyNote.textContent = stats.dailyStats?.length === 0
+          ? 'Banco conectado, mas sem registros ainda.'
+          : 'Banco de dados não conectado. Conecte na aba Banco de Telefones para ver estatísticas por dia.';
+        dailyNote.style.display = '';
+        dailyTbody.innerHTML = '<tr><td colspan="5" style="color:#808080;text-align:center;">—</td></tr>';
+      } else {
+        dailyNote.style.display = 'none';
+        dailyTbody.innerHTML = '';
+        for (const d of stats.dailyStats) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${escapeHtml(d.day)}</td>
+            <td>${Number(d.total).toLocaleString('pt-BR')}</td>
+            <td style="color:#006600;">${Number(d.valid).toLocaleString('pt-BR')}</td>
+            <td style="color:#800000;">${Number(d.invalid).toLocaleString('pt-BR')}</td>
+            <td>${pct(d.valid, d.total)}</td>
+          `;
+          dailyTbody.appendChild(tr);
+        }
+      }
+    }
+
+    document.getElementById('btnRefreshDash').addEventListener('click', dashboardLoad);
 
     // ═══════════════════════════════════════════════════════════
     //  ABA BANCO DE TELEFONES
