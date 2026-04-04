@@ -338,10 +338,10 @@ function getNumberIdWithTimeout(client, normalized, timeoutMs = 20000) {
  *
  * @param {string} normalized  Número normalizado no formato E.164.
  */
-async function getNumberIdWithRetry(normalized, maxRetries = 3, retryDelayMs = 5000) {
+async function getNumberIdWithRetry(normalized, clientOverride = null, maxRetries = 3, retryDelayMs = 5000) {
   let lastErr;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
-    const client = getNextClient();
+    const client = clientOverride || getNextClient();
     if (!client) throw new Error('Nenhuma conta WhatsApp conectada.');
     try {
       return await getNumberIdWithTimeout(client, normalized);
@@ -574,6 +574,7 @@ function createWindow() {
     minHeight: 760,
     frame:     false,
     backgroundColor: '#c0c0c0',
+    icon: path.join(__dirname, 'build', 'icon.ico'),
     webPreferences: {
       preload:          path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -764,6 +765,7 @@ ipcMain.handle('open-banco-window', () => {
     width: 960, height: 720, minWidth: 700, minHeight: 500,
     frame: false,
     backgroundColor: '#c0c0c0',
+    icon: path.join(__dirname, 'build', 'icon.ico'),
     title: 'Banco de Telefones',
     parent: mainWindow,
     webPreferences: {
@@ -783,6 +785,7 @@ ipcMain.handle('open-connect-window', () => {
     width: 400, height: 540, resizable: false,
     frame: false,
     backgroundColor: '#c0c0c0',
+    icon: path.join(__dirname, 'build', 'icon.ico'),
     title: 'Conexão WhatsApp',
     parent: mainWindow,
     webPreferences: {
@@ -979,133 +982,150 @@ ipcMain.handle('start-validation', async (_event, payload) => {
         .split(/\r?\n/).map(x => x.trim()).filter(Boolean);
 
       // Ao retomar, preserva resultados parciais do arquivo em curso
-      let allResults         = fileIdx === startFileIndex ? currentAllResults : [];
-      let validOriginalLines = fileIdx === startFileIndex ? currentValidLines : [];
       const lineStart        = fileIdx === startFileIndex ? startLineIndex    : 0;
-      if (fileIdx !== startFileIndex) processedInBatch = 0;
 
-      // ── Loop interno: itera sobre cada linha do arquivo ───────
-      for (let i = lineStart; i < rawLines.length; i++) {
+      // ── Loop paralelo: um worker por conta WhatsApp conectada ─
+      const connectedAccts  = bankOnly ? [] : getConnectedClients();
+      const lineResults     = new Array(rawLines.length).fill(undefined);
 
-        // Verificação de cancelamento (botão Parar ou Pausar)
-        if (cancelRequested) {
-          // Salva ponto de retomada para "Pausar"
-          resumeState = {
-            inputPaths,
-            fileIndex:          fileIdx,
-            startIndex:         i,
-            allResults:         [...allResults],
-            validOriginalLines: [...validOriginalLines],
-            processedInBatch,
-            totalValid,
-            completedZipFiles:  [...allZipFiles]
-          };
+      // Pré-preenche com resultados do resume (linhas já processadas)
+      const priorResults = fileIdx === startFileIndex ? currentAllResults : [];
+      for (let k = 0; k < lineStart; k++) lineResults[k] = priorResults[k];
 
-          // Gera ZIP parcial para download imediato do que foi processado
-          let partialZip = null;
-          try {
-            const ts           = makeTimestamp();
-            partialZip         = path.join(resolvedOutputDir, `validados_parcial_${ts}.zip`);
-            const partialFiles = [...allZipFiles];
-            const { txtContent, csvContent } = buildFileOutput(validOriginalLines, allResults, columnMapping);
-            partialFiles.push({ name: `${exportBase}_parcial.txt`, content: txtContent });
-            partialFiles.push({ name: `${exportBase}_parcial.csv`, content: csvContent });
-            if (partialFiles.length) await createZip(partialZip, partialFiles);
-          } catch { partialZip = null; }
+      let nextIdx            = lineStart;
+      let processedRealCount = fileIdx === startFileIndex ? processedInBatch : 0;
+      let batchPausePromise  = null;
 
-          return {
-            ok: true, canceled: true,
-            total:     globalTotal,
-            processed: globalCurrent,
-            valid:     totalValid + validOriginalLines.length,
-            partialZip
-          };
-        }
+      const runWorker = async (client) => {
+        while (true) {
+          if (cancelRequested) break;
+          if (batchPausePromise) await batchPausePromise;
+          if (cancelRequested) break;
 
-        const originalLine = rawLines[i];
-        const normalized   = extractPhoneFromLine(originalLine, columnMapping.phone ?? 0);
-        let row;
+          const myIdx = nextIdx++;
+          if (myIdx >= rawLines.length) break;
 
-        if (!normalized) {
-          // Linha sem número de telefone válido
-          row = {
-            line: originalLine, normalized: '',
-            status:  'formato_invalido',
-            details: 'Primeira coluna não contém telefone válido'
-          };
+          const originalLine = rawLines[myIdx];
+          const normalized   = extractPhoneFromLine(originalLine, columnMapping.phone ?? 0);
+          let row;
 
-        } else if (!forceRevalidate && await lookupPhone(normalized)) {
-          // Número já existe no banco/cache — usa resultado salvo
-          const { hasWa: exists } = phoneCache[normalized];
-          row = {
-            line: originalLine, normalized,
-            status:    exists ? 'tem_whatsapp' : 'sem_whatsapp',
-            details:   (exists ? 'Registrado no WhatsApp' : 'Não registrado') + ' (banco)',
-            fromCache: true
-          };
-          if (exists) validOriginalLines.push(originalLine);
-
-        } else if (bankOnly) {
-          // Modo somente banco: número não encontrado, sem consultar WhatsApp
-          row = {
-            line: originalLine, normalized,
-            status: 'sem_dados', details: 'Não encontrado no banco',
-            fromCache: true
-          };
-
-        } else {
-          // Consulta ao WhatsApp via whatsapp-web.js
-          try {
-            const result    = await getNumberIdWithRetry(normalized);
-            const exists    = !!result;
-            const checkedAt = nowBRT();
-            phoneCache[normalized] = { hasWa: exists, checkedAt };
-            await savePhone(normalized, exists, checkedAt);
+          if (!normalized) {
+            row = {
+              line: originalLine, normalized: '',
+              status:  'formato_invalido',
+              details: 'Primeira coluna não contém telefone válido'
+            };
+          } else if (!forceRevalidate && await lookupPhone(normalized)) {
+            const { hasWa: exists } = phoneCache[normalized];
             row = {
               line: originalLine, normalized,
-              status:  exists ? 'tem_whatsapp' : 'sem_whatsapp',
-              details: exists ? 'Registrado no WhatsApp' : 'Não registrado'
+              status:    exists ? 'tem_whatsapp' : 'sem_whatsapp',
+              details:   (exists ? 'Registrado no WhatsApp' : 'Não registrado') + ' (banco)',
+              fromCache: true
             };
-            if (exists) validOriginalLines.push(originalLine);
-          } catch (err) {
+          } else if (bankOnly) {
             row = {
               line: originalLine, normalized,
-              status:  'erro',
-              details: (err.message || String(err)).replace(/[\r\n]+/g, ' ')
+              status: 'sem_dados', details: 'Não encontrado no banco',
+              fromCache: true
             };
+          } else {
+            try {
+              const result    = await getNumberIdWithRetry(normalized, client);
+              const exists    = !!result;
+              const checkedAt = nowBRT();
+              phoneCache[normalized] = { hasWa: exists, checkedAt };
+              await savePhone(normalized, exists, checkedAt);
+              row = {
+                line: originalLine, normalized,
+                status:  exists ? 'tem_whatsapp' : 'sem_whatsapp',
+                details: exists ? 'Registrado no WhatsApp' : 'Não registrado'
+              };
+            } catch (err) {
+              row = {
+                line: originalLine, normalized,
+                status:  'erro',
+                details: (err.message || String(err)).replace(/[\r\n]+/g, ' ')
+              };
+            }
           }
-        }
 
-        allResults.push(row);
-        if (!row.fromCache) processedInBatch++;
-        globalCurrent++;
+          lineResults[myIdx] = row;
+          globalCurrent++;
 
-        // Envia progresso ao frontend em tempo real
-        mainWindow?.webContents.send('validation-progress', {
-          current:    globalCurrent,
-          total:      globalTotal,
-          fileIndex:  fileIdx,
-          fileCount:  inputPaths.length,
-          fileName,
-          row,
-          batchCount: processedInBatch,
-          batchSize:  Number(batchSize)
-        });
+          mainWindow?.webContents.send('validation-progress', {
+            current:    globalCurrent,
+            total:      globalTotal,
+            fileIndex:  fileIdx,
+            fileCount:  inputPaths.length,
+            fileName,
+            row,
+            batchCount: processedRealCount,
+            batchSize:  Number(batchSize)
+          });
 
-        // Aplica delay entre consultas reais para não ser bloqueado pelo WhatsApp
-        if (!row.fromCache) {
-          const isLastLine = i === rawLines.length - 1 && fileIdx === inputPaths.length - 1;
-          if (!isLastLine) {
-            if (processedInBatch >= Number(batchSize)) {
-              broadcastWaStatus({ type: 'pause', message: `Pausa de lote por ${batchPauseMs}ms.` });
-              await sleep(Number(batchPauseMs));
-              processedInBatch = 0;
-            } else {
-              await sleep(randBetween(minDelayMs, maxDelayMs));
+          if (!row.fromCache) {
+            const moreItems = nextIdx < rawLines.length;
+            if (moreItems) {
+              processedRealCount++;
+              if (processedRealCount >= Number(batchSize) && !batchPausePromise) {
+                broadcastWaStatus({ type: 'pause', message: `Pausa de lote por ${batchPauseMs}ms.` });
+                processedRealCount = 0;
+                batchPausePromise = sleep(Number(batchPauseMs)).then(() => { batchPausePromise = null; });
+              } else if (!batchPausePromise) {
+                await sleep(randBetween(minDelayMs, maxDelayMs));
+              }
             }
           }
         }
-      } // fim loop de linhas
+      };
+
+      await Promise.all(
+        connectedAccts.length
+          ? connectedAccts.map(acc => runWorker(acc.client))
+          : [runWorker(null)]
+      );
+
+      // ── Cancel/Pause: salva ponto de retomada ─────────────────
+      if (cancelRequested) {
+        const partialAllResults = lineResults.filter(r => r !== undefined);
+        const partialValidLines = partialAllResults
+          .filter(r => r.status === 'tem_whatsapp').map(r => r.line);
+
+        resumeState = {
+          inputPaths,
+          fileIndex:          fileIdx,
+          startIndex:         partialAllResults.length,
+          allResults:         partialAllResults,
+          validOriginalLines: partialValidLines,
+          processedInBatch:   processedRealCount,
+          totalValid,
+          completedZipFiles:  [...allZipFiles]
+        };
+
+        let partialZip = null;
+        try {
+          const ts           = makeTimestamp();
+          partialZip         = path.join(resolvedOutputDir, `validados_parcial_${ts}.zip`);
+          const partialFiles = [...allZipFiles];
+          const { txtContent, csvContent } = buildFileOutput(partialValidLines, partialAllResults, columnMapping);
+          partialFiles.push({ name: `${exportBase}_parcial.txt`, content: txtContent });
+          partialFiles.push({ name: `${exportBase}_parcial.csv`, content: csvContent });
+          if (partialFiles.length) await createZip(partialZip, partialFiles);
+        } catch { partialZip = null; }
+
+        return {
+          ok: true, canceled: true,
+          total:     globalTotal,
+          processed: globalCurrent,
+          valid:     totalValid + partialValidLines.length,
+          partialZip
+        };
+      }
+
+      // Constrói resultados ordenados do arquivo
+      const allResults         = lineResults.filter(r => r !== undefined);
+      const validOriginalLines = allResults.filter(r => r.status === 'tem_whatsapp').map(r => r.line);
 
       // Arquivo concluído — adiciona TXT e CSV ao ZIP final
       totalValid += validOriginalLines.length;

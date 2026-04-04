@@ -98,7 +98,7 @@ CREATE TABLE phone_cache (
 
 ## Múltiplas contas
 
-Na aba **WhatsApp**, clique em **Adicionar conta** para incluir mais contas. O validador distribui as consultas em round-robin entre todas as contas conectadas, reduzindo o risco de bloqueio.
+Na aba **WhatsApp**, clique em **Adicionar conta** para incluir mais contas. Cada conta conectada processa um número simultaneamente — quanto mais contas, maior o throughput e menor o risco de bloqueio por conta individual.
 
 ---
 
