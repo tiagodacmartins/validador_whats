@@ -415,11 +415,72 @@
       .grid { grid-template-columns: 1fr; }
       .stats { grid-template-columns: repeat(2, 1fr); }
     }
+
+    /* ── Column mapping modal ── */
+    .col-modal-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,.45); z-index: 1000;
+      align-items: center; justify-content: center;
+    }
+    .col-modal-overlay.open { display: flex; }
+    .col-modal {
+      background: #c0c0c0;
+      border: 2px solid;
+      border-top-color: #ffffff; border-left-color: #ffffff;
+      border-right-color: #808080; border-bottom-color: #808080;
+      box-shadow: 4px 4px 0 #404040;
+      width: 520px; max-width: calc(100vw - 32px);
+    }
+    .col-modal-title {
+      background: linear-gradient(to right, #000080, #1084d0);
+      color: #fff; font-size: 11px; font-weight: bold;
+      padding: 4px 8px; display: flex; justify-content: space-between; align-items: center;
+    }
+    .col-modal-title button {
+      background: #c0c0c0; border: 2px solid;
+      border-top-color: #ffffff; border-left-color: #ffffff;
+      border-right-color: #808080; border-bottom-color: #808080;
+      font-size: 11px; font-weight: bold; cursor: pointer;
+      padding: 0 6px; line-height: 1.5; color: #000;
+    }
+    .col-modal-body { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+    .col-modal-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .col-modal-row label { font-size: 11px; font-weight: bold; width: 80px; flex-shrink: 0; }
+    .col-modal-row select { flex: 1; min-width: 0; width: 0; font-size: 11px; }
+    .col-modal-vars { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; }
+    .col-modal-footer { padding: 8px 12px; display: flex; justify-content: flex-end; gap: 6px;
+      border-top: 1px solid #808080; }
   </style>
 </head>
 <body>
   <div class="app">
   <div class="app-inner">
+
+    <!-- ====== MODAL MAPEAMENTO DE COLUNAS ====== -->
+    <div class="col-modal-overlay" id="colModalOverlay">
+      <div class="col-modal">
+        <div class="col-modal-title">
+          <span>&#9776; Mapeamento de Colunas</span>
+          <button id="btnColModalClose">&#10005;</button>
+        </div>
+        <div class="col-modal-body">
+          <div style="font-size:11px;color:#555;margin-bottom:2px;">
+            Selecione qual coluna contém o telefone e quais serão as variáveis do HSM (até 8).
+          </div>
+          <div class="col-modal-row">
+            <label>Coluna do Telefone</label>
+            <select id="colPhone"></select>
+          </div>
+          <hr/>
+          <div style="font-size:11px;font-weight:bold;">Variáveis (opcional)</div>
+          <div class="col-modal-vars" id="colVarsGrid"></div>
+        </div>
+        <div class="col-modal-footer">
+          <button class="btn btn-secondary" id="btnColModalCancel">Cancelar</button>
+          <button class="btn btn-primary" id="btnColModalOk">OK</button>
+        </div>
+      </div>
+    </div>
     <div class="tab-bar">
       <button class="tab active" data-tab="validador">&#9654; Validador</button>
       <button class="tab" data-tab="banco" id="tabBtnBanco">&#128222; Banco de Telefones</button>
@@ -436,11 +497,13 @@
           <div class="row">
             <button id="btnPick" class="btn btn-secondary">Escolher arquivo(s)</button>
             <button id="btnClearFiles" class="btn btn-secondary" style="display:none;">&#10005; Limpar lista</button>
+            <button id="btnMapCols" class="btn btn-secondary" style="display:none;">&#9776; Mapear colunas</button>
           </div>
           <div id="fileListArea" style="margin-top:6px;display:none;max-height:130px;overflow-y:auto;border:2px solid;border-top-color:#808080;border-left-color:#808080;border-right-color:#fff;border-bottom-color:#fff;padding:4px 6px;background:#ffffff;">
             <div id="fileListItems"></div>
           </div>
           <div class="muted" id="fileInfo" style="margin-top:4px;">Nenhum arquivo selecionado. Arraste TXTs aqui.</div>
+          <div id="colMappingInfo" style="margin-top:4px;font-size:11px;color:#000080;display:none;"></div>
         </div>
 
         <div class="row">
@@ -631,14 +694,36 @@
   </div><!-- .app -->
 
   <script>
-    const fileInfo = document.getElementById('fileInfo');
+    // ═══════════════════════════════════════════════════════════
+    //  REFERÊNCIAS DOM — elementos acessados repetidamente
+    // ═══════════════════════════════════════════════════════════
+    const fileInfo    = document.getElementById('fileInfo');
     const statusBadge = document.getElementById('statusBadge');
-    const tbody = document.getElementById('tbody');
+    const tbody       = document.getElementById('tbody');
     const progressBar = document.getElementById('progressBar');
     const progressText = document.getElementById('progressText');
-    const resultInfo = document.getElementById('resultInfo');
-    const logOutput = document.getElementById('logOutput');
+    const resultInfo  = document.getElementById('resultInfo');
+    const logOutput   = document.getElementById('logOutput');
 
+    // ═══════════════════════════════════════════════════════════
+    //  UTILITÁRIOS
+    // ═══════════════════════════════════════════════════════════
+
+    /** Escapa caracteres HTML para evitar XSS ao inserir texto via innerHTML. */
+    function escapeHtml(v) {
+      return String(v || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    /**
+     * Adiciona uma linha de log no painel lateral com timestamp.
+     * @param {string} text  Mensagem a exibir.
+     * @param {string} cls   Classe CSS de cor (log-ok, log-err, log-warn, log-info, log-muted).
+     */
     function logLine(text, cls = '') {
       const now = new Date();
       const p = n => String(n).padStart(2, '0');
@@ -657,7 +742,24 @@
       logOutput.innerHTML = '<span class="log-muted">Log limpo.</span>';
     });
 
-    // Exclusividade mútua entre os dois checkboxes
+    // ═══════════════════════════════════════════════════════════
+    //  ESTADO DA APLICAÇÃO
+    // ═══════════════════════════════════════════════════════════
+
+    // Contadores exibidos no painel "Progresso"
+    const sValid   = document.getElementById('sValid');
+    const sInvalid = document.getElementById('sInvalid');
+    const sFormat  = document.getElementById('sFormat');
+    const sError   = document.getElementById('sError');
+
+    let state = { valid: 0, invalid: 0, format: 0, error: 0, cached: 0 };
+    let outputDir    = '';       // pasta de saída selecionada pelo usuário
+    let selectedFiles = [];      // arquivos TXT a validar: [{ filePath, count }]
+    let etaStartTime    = null;  // ponto de início para cálculo do ETA
+    let etaStartCurrent = 0;     // posição no início da janela de cálculo do ETA
+
+    // ── Exclusividade mútua entre checkboxes de modo ──────────
+    // "Forçar validação" e "Somente banco" são mutuamente exclusivos
     document.getElementById('forceRevalidate').addEventListener('change', function() {
       if (this.checked) document.getElementById('bankOnly').checked = false;
     });
@@ -665,29 +767,28 @@
       if (this.checked) document.getElementById('forceRevalidate').checked = false;
     });
 
-    const sValid = document.getElementById('sValid');
-    const sInvalid = document.getElementById('sInvalid');
-    const sFormat = document.getElementById('sFormat');
-    const sError = document.getElementById('sError');
+    // ═══════════════════════════════════════════════════════════
+    //  LISTA DE ARQUIVOS E MAPEAMENTO DE COLUNAS
+    // ═══════════════════════════════════════════════════════════
 
-    let state = { valid: 0, invalid: 0, format: 0, error: 0, cached: 0 };
-    let outputDir = '';
-    let selectedFiles = [];
-    let etaStartTime = null;
-    let etaStartCurrent = 0;
-
+    /** Atualiza a exibição da lista de arquivos selecionados e dos botões de ação. */
     function renderFileList() {
       const items = document.getElementById('fileListItems');
       const area = document.getElementById('fileListArea');
       const clearBtn = document.getElementById('btnClearFiles');
+      const mapBtn = document.getElementById('btnMapCols');
       if (!selectedFiles.length) {
         area.style.display = 'none';
         clearBtn.style.display = 'none';
+        mapBtn.style.display = 'none';
         fileInfo.textContent = 'Nenhum arquivo selecionado. Arraste TXTs aqui.';
+        columnMapping = { phone: 0, variables: [2] };
+        updateColMappingInfo();
         return;
       }
       area.style.display = '';
       clearBtn.style.display = '';
+      mapBtn.style.display = '';
       const total = selectedFiles.reduce((a, f) => a + f.count, 0);
       fileInfo.textContent = `${selectedFiles.length} arquivo(s) selecionado(s) \u2014 ${total} linhas no total.`;
       items.innerHTML = '';
@@ -699,8 +800,78 @@
       });
     }
 
-    let paused = false;
+    // ── Column mapping state ──────────────────────────────────
+    // Define quais colunas do arquivo correspondem ao telefone e às variáveis do HSM
+    let columnMapping = { phone: 0, variables: [2] };
 
+    function updateColMappingInfo() {
+      const el = document.getElementById('colMappingInfo');
+      if (!selectedFiles.length) { el.style.display = 'none'; return; }
+      const phoneLabel = `Col. ${String.fromCharCode(65 + (columnMapping.phone ?? 0))}`;
+      const varLabels = (columnMapping.variables || []).filter(v => v !== null && v !== '').map(v => `Col. ${String.fromCharCode(65 + Number(v))}`);
+      el.style.display = '';
+      el.textContent = `Telefone: ${phoneLabel}` + (varLabels.length ? ` | Variáveis: ${varLabels.join(', ')}` : ' | Sem variáveis');
+    }
+
+    async function openColModal() {
+      if (!selectedFiles.length) return;
+      const { columns } = await window.waApp.getFileColumns(selectedFiles[0].filePath);
+      if (!columns.length) { alert('Não foi possível ler as colunas do arquivo.'); return; }
+
+      // phone select
+      const phoneEl = document.getElementById('colPhone');
+      phoneEl.innerHTML = columns.map(c => `<option value="${c.index}" ${c.index === (columnMapping.phone ?? 0) ? 'selected' : ''}>${escapeHtml(c.label)}</option>`).join('');
+
+      // variables grid (8 rows)
+      const varsGrid = document.getElementById('colVarsGrid');
+      varsGrid.innerHTML = '';
+      const currentVars = columnMapping.variables || [2];
+      for (let i = 0; i < 8; i++) {
+        const row = document.createElement('div');
+        row.className = 'col-modal-row';
+        const selId = `colVar${i}`;
+        const curVal = currentVars[i] !== undefined ? currentVars[i] : '';
+        const opts = `<option value="">— nenhuma —</option>` + columns.map(c => `<option value="${c.index}" ${String(c.index) === String(curVal) ? 'selected' : ''}>${escapeHtml(c.label)}</option>`).join('');
+        row.innerHTML = `<label>Variável ${i + 1}</label><select id="${selId}">${opts}</select>`;
+        varsGrid.appendChild(row);
+      }
+
+      document.getElementById('colModalOverlay').classList.add('open');
+    }
+
+    function closeColModal() {
+      document.getElementById('colModalOverlay').classList.remove('open');
+    }
+
+    document.getElementById('btnMapCols').addEventListener('click', openColModal);
+    document.getElementById('btnColModalClose').addEventListener('click', closeColModal);
+    document.getElementById('btnColModalCancel').addEventListener('click', closeColModal);
+    document.getElementById('colModalOverlay').addEventListener('click', e => { if (e.target === e.currentTarget) closeColModal(); });
+
+    document.getElementById('btnColModalOk').addEventListener('click', () => {
+      const phone = Number(document.getElementById('colPhone').value);
+      const variables = [];
+      for (let i = 0; i < 8; i++) {
+        const v = document.getElementById(`colVar${i}`).value;
+        if (v !== '') variables.push(Number(v));
+      }
+      columnMapping = { phone, variables: variables.length ? variables : [] };
+      updateColMappingInfo();
+      closeColModal();
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    //  CONTROLE DA VALIDAÇÃO — modo, timer, badges, tabela
+    // ═══════════════════════════════════════════════════════════
+
+    let paused = false; // true quando o usuário clicou em "Pausar" (aguardando resposta do main)
+
+    /**
+     * Alterna a interface entre modo "em validação" e modo "ocioso".
+     * - on=true:  transforma btnStart em "■ Parar" e exibe btnPause.
+     * - on=false: restaura btnStart original e oculta btnPause.
+     * ATENÇÃO: não altera `paused` — isso deve ser feito pelo chamador.
+     */
     function setValidatingMode(on) {
       const btnStart = document.getElementById('btnStart');
       const btnPause = document.getElementById('btnPause');
@@ -718,6 +889,7 @@
       }
     }
 
+    /** Limpa a tabela de resultados, contadores, barra de progresso e timer. */
     function resetUI() {
       tbody.innerHTML = '';
       state = { valid: 0, invalid: 0, format: 0, error: 0, cached: 0 };
@@ -730,17 +902,18 @@
       resetTimer();
     }
 
-    // Load initial cache count
+    // Carrega a contagem inicial do banco ao abrir a janela
     (async () => {
       const info = await window.waApp.getCacheInfo();
       document.getElementById('cacheTotal').textContent = info.count.toLocaleString('pt-BR');
     })();
 
-    let elapsedMs = 0;
-    let timerStart = null;
+    let elapsedMs    = 0;     // milissegundos acumulados (para suportar pause/resume)
+    let timerStart   = null;  // Date.now() quando o timer está rodando, null quando pausado
     let timerInterval = null;
-    let isValidating = false;
+    let isValidating  = false; // true enquanto uma validação em lote está em andamento
 
+    /** Formata milissegundos como "HH:MM:SS". */
     function formatTime(ms) {
       const s = Math.floor(ms / 1000);
       const h = Math.floor(s / 3600);
@@ -778,6 +951,7 @@
       document.getElementById('etaText').textContent = '';
     }
 
+    /** Atualiza o badge de status e registra a mensagem no log. */
     function setBadge(type, message) {
       statusBadge.className = 'badge ' + (type === 'ready' || type === 'authenticated' ? 'ok' : type === 'error' ? 'err' : 'warn');
       statusBadge.textContent = message;
@@ -785,6 +959,7 @@
       logLine(message, cls);
     }
 
+    /** Insere uma linha na tabela de resultados. Novas linhas aparecem no topo (prepend). */
     function addRow(row) {
       const tr = document.createElement('tr');
       const cacheTag = row.fromCache
@@ -807,6 +982,10 @@
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
     }
+
+    // ═══════════════════════════════════════════════════════════
+    //  EVENT LISTENERS — Seleção de arquivos e drop zone
+    // ═══════════════════════════════════════════════════════════
 
     document.getElementById('btnPick').addEventListener('click', async () => {
       const files = await window.waApp.pickFile();
@@ -844,6 +1023,10 @@
       renderFileList();
     });
 
+    // ═══════════════════════════════════════════════════════════
+    //  EVENT LISTENERS — Configuração e botões de controle
+    // ═══════════════════════════════════════════════════════════
+
     document.getElementById('btnOpenBanco').addEventListener('click', () => {
       switchTab('banco');
     });
@@ -859,9 +1042,22 @@
       switchTab('whatsapp');
     });
 
-    // Auto-connect badge
+    // Badge inicial enquanto aguarda a conexão automática do main.js
     setBadge('warn', 'Conectando...');
 
+    // ═══════════════════════════════════════════════════════════
+    //  LÓGICA DE VALIDAÇÃO
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Executa (ou retoma) uma validação em lote.
+     * Envia a configuração ao main.js e lida com os três desfechos possíveis:
+     *   - Erro: exibe mensagem no badge.
+     *   - Cancelado/Pausado: mostra botão de retomada ou limpa a UI.
+     *   - Concluído: exibe caminho do ZIP e dispara notificação.
+     *
+     * @param {boolean} resumeFrom  true ao retomar de uma pausa anterior.
+     */
     async function runValidation(resumeFrom = false) {
       isValidating = true;
       paused = false;
@@ -880,11 +1076,13 @@
         outputDir,
         resumeFrom,
         forceRevalidate: document.getElementById('forceRevalidate').checked,
-        bankOnly: document.getElementById('bankOnly').checked
+        bankOnly: document.getElementById('bankOnly').checked,
+        columnMapping
       });
 
       isValidating = false;
       pauseTimer();
+      // Salva `paused` ANTES de setValidatingMode, pois essa função não altera `paused`
       const wasPaused = paused;
       setValidatingMode(false);
 
@@ -932,6 +1130,11 @@
       }
     }
 
+    // ── Botão "Iniciar validação" / "■ Parar" ─────────────────
+    // Comportamento:
+    //   Ocioso     → inicia nova validação.
+    //   Validando  → solicita cancelamento total (stop + resetUI).
+    //   Pausado    → cancela definitivamente e limpa a UI.
     document.getElementById('btnStart').addEventListener('click', async () => {
       if (isValidating) {
         paused = false;
@@ -953,6 +1156,9 @@
       await runValidation(false);
     });
 
+    // ── Botão "|| Pausar" / "↺ Retomar" ──────────────────────
+    // Pausar: sinaliza cancelamento e aguarda o ponto de retomada vir do main.
+    // Retomar: chama runValidation(true) para continuar de onde parou.
     document.getElementById('btnPause').addEventListener('click', async () => {
       const btn = document.getElementById('btnPause');
       if (paused) {
@@ -969,6 +1175,7 @@
       }
     });
 
+    // ── Validação rápida (avulsa) ─────────────────────────────
     document.getElementById('btnManualValidate').addEventListener('click', async () => {
       const raw = document.getElementById('manualPhones').value.trim();
       if (!raw) return;
@@ -1004,6 +1211,11 @@
       if (e.key === 'Enter') document.getElementById('btnManualValidate').click();
     });
 
+    // ═══════════════════════════════════════════════════════════
+    //  EVENTO DE PROGRESSO (push do main.js → renderer)
+    // ═══════════════════════════════════════════════════════════
+    // Recebe cada linha processada e atualiza: tabela, contadores,
+    // barra de progresso, ETA e badge de status.
     window.waApp.onProgress((data) => {
       addRow(data.row);
       if (data.row.fromCache) state.cached++;
@@ -1043,7 +1255,14 @@
       }
     });
 
-    // ===== TAB SWITCHING =====
+    // ═══════════════════════════════════════════════════════════
+    //  NAVEGAÇÃO POR ABAS
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Alterna para a aba indicada e dispara o carregamento de dados se necessário.
+     * @param {string} name  'validador' | 'banco' | 'whatsapp'
+     */
     function switchTab(name) {
       document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
       document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + name));
@@ -1052,8 +1271,11 @@
     }
     document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
 
-    // ===== BANCO TAB =====
-    const BANCO_PAGE_SIZE = 100;
+    // ═══════════════════════════════════════════════════════════
+    //  ABA BANCO DE TELEFONES
+    // ═══════════════════════════════════════════════════════════
+
+    const BANCO_PAGE_SIZE = 100; // registros por página
     let bancoPage = 1;
     let bancoTotal = 0;
     let bancoQuery = '';
@@ -1150,7 +1372,11 @@
       }
     });
 
-    // ===== WHATSAPP TAB =====
+    // ═══════════════════════════════════════════════════════════
+    //  ABA WHATSAPP — gerenciamento de contas
+    // ═══════════════════════════════════════════════════════════
+
+    /** Formata um número E.164 como "+55 (DDD) NNNNN-NNNN" para exibição. */
     function formatWaPhone(raw) {
       const s = String(raw || '').replace(/\D/g, '');
       if (s.startsWith('55') && s.length >= 12) {
@@ -1162,6 +1388,7 @@
       return s ? '+' + s : '';
     }
 
+    /** Renderiza os cards de todas as contas na aba WhatsApp. */
     function renderAccounts(list) {
       const container = document.getElementById('accountList');
       container.innerHTML = '';
@@ -1234,15 +1461,18 @@
       }
     }
 
+    /** Carrega e renderiza as contas ao entrar na aba WhatsApp. */
     async function waTabLoad() {
       const list = await window.waApp.getAccounts();
       renderAccounts(list);
     }
 
+    // Atualiza os cards quando o main.js emite uma mudança de estado de conta
     window.waApp.onAccounts((data) => {
       renderAccounts(data.accounts);
     });
 
+    // Atualiza o badge de status quando o main.js emite um evento wa-status
     window.waApp.onStatus((data) => {
       setBadge(data.type, data.message);
     });
