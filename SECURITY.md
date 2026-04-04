@@ -229,7 +229,7 @@ for await (const line of rl) {
 Se encontrar uma vulnerabilidade:
 
 1. **Não reporte em Issues públicas**
-2. Envie email para: (a ser configurado)
+2. Envie email para: tiago.dacmartins@gmail.com
 3. Inclua:
    - Descrição clara
    - Passos para reproduzir

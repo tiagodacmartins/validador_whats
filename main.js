@@ -43,6 +43,34 @@ const accounts = new Map();
 let rrIndex       = 0; // índice do round-robin para distribuição das consultas
 let nextAccountId = 1;
 
+// ── Semaphore para limitar concorrência ──────────────────────
+class Semaphore {
+  constructor(max) { this.max = max; this.current = 0; this.queue = []; }
+  async acquire() {
+    if (this.current < this.max) { this.current++; return; }
+    await new Promise(resolve => this.queue.push(resolve));
+    this.current++;
+  }
+  release() {
+    this.current--;
+    const next = this.queue.shift();
+    if (next) next();
+  }
+}
+const validationSemaphore = new Semaphore(10); // máx 10 promises simultâneas
+
+// ── Path traversal validation ────────────────────────────────
+function isSafeFilePath(userPath) {
+  try {
+    const resolved = path.resolve(userPath);
+    const cwd = path.resolve(process.cwd());
+    // Verifica se o caminho resolvido começa com CWD e não tem ..
+    return resolved.startsWith(cwd) && !resolved.includes('..' + path.sep);
+  } catch {
+    return false;
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  UTILITÁRIOS DE DATA/HORA
 // ═══════════════════════════════════════════════════════════════
@@ -215,7 +243,9 @@ function loadSavedAccountIds() {
   try {
     const p = path.join(app.getPath('userData'), 'wa-accounts.json');
     if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'));
-  } catch {}
+  } catch (err) {
+    console.warn('[loadSavedAccountIds] Erro ao carregar IDs de contas:', err.message);
+  }
   return [];
 }
 
@@ -374,7 +404,9 @@ const DB_CONFIG_PATH = () => path.join(app.getPath('userData'), 'db-config.json'
 function saveDbConfig(config) {
   try {
     fs.writeFileSync(DB_CONFIG_PATH(), JSON.stringify(config), 'utf8');
-  } catch {}
+  } catch (err) {
+    console.warn('[saveDbConfig] Erro ao salvar credenciais do banco:', err.message);
+  }
 }
 
 /** Remove as credenciais salvas (ao desconectar). */
@@ -382,7 +414,9 @@ function deleteDbConfig() {
   try {
     const p = DB_CONFIG_PATH();
     if (fs.existsSync(p)) fs.unlinkSync(p);
-  } catch {}
+  } catch (err) {
+    console.warn('[deleteDbConfig] Erro ao deletar credenciais do banco:', err.message);
+  }
 }
 
 /** Carrega e retorna a config salva, ou null se não existir. */
@@ -390,7 +424,9 @@ function loadDbConfig() {
   try {
     const p = DB_CONFIG_PATH();
     if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'));
-  } catch {}
+  } catch (err) {
+    console.warn('[loadDbConfig] Erro ao carregar credenciais do banco:', err.message);
+  }
   return null;
 }
 
@@ -402,7 +438,7 @@ async function tryConnectDb(config) {
     database:          String(config.database || 'postgres').trim(),
     user:              String(config.user).trim(),
     password:          String(config.password),
-    ssl:               config.ssl ? { rejectUnauthorized: false } : false,
+    ssl:               config.ssl ? { rejectUnauthorized: process.env.NODE_ENV === 'production' } : false,
     max:               10,
     idleTimeoutMillis: 30000
   });
@@ -421,7 +457,9 @@ ipcMain.handle('connect-db', async (_event, config) => {
     return { ok: false, error: 'Host, usuário e senha são obrigatórios.' };
   }
   if (pool) {
-    try { await pool.end(); } catch {}
+    try { await pool.end(); } catch (err) {
+      console.warn('[connect-db] Erro ao encerrar conexão anterior:', err.message);
+    }
     pool = null;
   }
   try {
@@ -437,7 +475,9 @@ ipcMain.handle('connect-db', async (_event, config) => {
 // Desconecta do banco e libera o pool
 ipcMain.handle('disconnect-db', async () => {
   if (pool) {
-    try { await pool.end(); } catch {}
+    try { await pool.end(); } catch (err) {
+      console.warn('[disconnect-db] Erro ao encerrar pool:', err.message);
+    }
     pool = null;
   }
   deleteDbConfig();
@@ -589,7 +629,7 @@ function createWindow() {
     initSessionCache();
     const savedIds = loadSavedAccountIds();
     if (savedIds.length === 0) {
-      startAccount('account-1').catch(() => {});
+      startAccount('account-1').catch(err => console.error('[did-finish-load] Erro ao inicializar account-1:', err.message));
       nextAccountId = 2;
     } else {
       // Garante que o próximo ID não conflite com os existentes
@@ -597,7 +637,7 @@ function createWindow() {
         const n = parseInt(id.replace('account-', ''), 10);
         if (!isNaN(n) && n >= nextAccountId) nextAccountId = n + 1;
       }
-      for (const id of savedIds) startAccount(id).catch(() => {});
+      for (const id of savedIds) startAccount(id).catch(err => console.error(`[did-finish-load] Erro ao inicializar ${id}:`, err.message));
     }
 
     // Auto-connect ao banco se houver credenciais salvas
@@ -605,7 +645,7 @@ function createWindow() {
     if (savedDbConfig) {
       tryConnectDb(savedDbConfig)
         .then(() => broadcastDbStatus({ connected: true }))
-        .catch(() => {}); // falha silenciosa — usuário reconecta manualmente
+        .catch(err => console.warn('[did-finish-load] Auto-conexão ao banco falhou (usuário reconecta manualmente):', err.message));
     }
   });
 }
@@ -647,19 +687,33 @@ ipcMain.handle('get-file-info', (_event, filePaths) => {
   try {
     const paths = Array.isArray(filePaths) ? filePaths : [filePaths];
     return paths
-      .filter(fp => fs.existsSync(fp))
-      .map(fp => ({
-        filePath: fp,
-        count: fs.readFileSync(fp, 'utf8').split(/\r?\n/).filter(Boolean).length
-      }));
-  } catch { return []; }
+      .filter(fp => fs.existsSync(fp) && isSafeFilePath(fp))
+      .map(fp => {
+        try {
+          return {
+            filePath: fp,
+            count: fs.readFileSync(fp, 'utf8').split(/\r?\n/).filter(Boolean).length
+          };
+        } catch (err) {
+          console.warn('[get-file-info] Erro ao ler arquivo:', err.message);
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch (err) {
+    console.error('[get-file-info] Erro geral:', err.message);
+    return [];
+  }
 });
 
 // Lê a primeira linha do arquivo e retorna as colunas detectadas.
 // Usado pelo modal de mapeamento de colunas no frontend.
 ipcMain.handle('get-file-columns', (_event, filePath) => {
   try {
-    if (!fs.existsSync(filePath)) return { columns: [] };
+    if (!fs.existsSync(filePath) || !isSafeFilePath(filePath)) {
+      console.warn('[get-file-columns] Path validation failed:', filePath);
+      return { columns: [] };
+    }
     const firstLine = fs.readFileSync(filePath, 'utf8').split(/\r?\n/).find(l => l.trim());
     if (!firstLine) return { columns: [] };
     const columns = firstLine.split(';').map((v, i) => ({
@@ -667,7 +721,10 @@ ipcMain.handle('get-file-columns', (_event, filePath) => {
       label: `Coluna ${String.fromCharCode(65 + i)} — ${v.trim().slice(0, 40) || '(vazio)'}`
     }));
     return { columns };
-  } catch { return { columns: [] }; }
+  } catch (err) {
+    console.error('[get-file-columns] Erro:', err.message);
+    return { columns: [] };
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -697,7 +754,9 @@ ipcMain.handle('add-account', async () => {
 ipcMain.handle('remove-account', async (_event, id) => {
   const acc = accounts.get(id);
   if (!acc) return { ok: true };
-  try { if (acc.client) await acc.client.destroy(); } catch {}
+  try { if (acc.client) await acc.client.destroy(); } catch (err) {
+    console.warn(`[remove-account] Erro ao destruir cliente ${id}:`, err.message);
+  }
   accounts.delete(id);
   saveAccountIds();
   broadcastWaStatus({ type: 'warn', message: `Conta ${id} removida.` });
@@ -723,7 +782,9 @@ ipcMain.handle('disconnect-whatsapp', async (_event, id) => {
   const acc   = id ? accounts.get(id) : [...accounts.values()][0];
   if (!acc) return { ok: true };
   const accId = id || [...accounts.keys()][0];
-  try { if (acc.client) await acc.client.destroy(); } catch {}
+  try { if (acc.client) await acc.client.destroy(); } catch (err) {
+    console.warn(`[disconnect-whatsapp] Erro ao destruir cliente ${accId}:`, err.message);
+  }
   acc.isReady       = false;
   acc.client        = null;
   acc.status        = 'disconnected';
@@ -997,10 +1058,12 @@ ipcMain.handle('start-validation', async (_event, payload) => {
       let batchPausePromise  = null;
 
       const runWorker = async (client) => {
-        while (true) {
-          if (cancelRequested) break;
-          if (batchPausePromise) await batchPausePromise;
-          if (cancelRequested) break;
+        await validationSemaphore.acquire();
+        try {
+          while (true) {
+            if (cancelRequested) break;
+            if (batchPausePromise) await batchPausePromise;
+            if (cancelRequested) break;
 
           const myIdx = nextIdx++;
           if (myIdx >= rawLines.length) break;
@@ -1077,6 +1140,9 @@ ipcMain.handle('start-validation', async (_event, payload) => {
               }
             }
           }
+          }
+        } finally {
+          validationSemaphore.release();
         }
       };
 
@@ -1112,7 +1178,10 @@ ipcMain.handle('start-validation', async (_event, payload) => {
           partialFiles.push({ name: `${exportBase}_parcial.txt`, content: txtContent });
           partialFiles.push({ name: `${exportBase}_parcial.csv`, content: csvContent });
           if (partialFiles.length) await createZip(partialZip, partialFiles);
-        } catch { partialZip = null; }
+        } catch (err) {
+          console.warn('[start-validation] Erro ao criar ZIP parcial:', err.message);
+          partialZip = null;
+        }
 
         return {
           ok: true, canceled: true,
@@ -1210,8 +1279,10 @@ app.on('before-quit', async e => {
     if (connected.length > 0) {
       e.preventDefault();
       isQuitting = true;
-      for (const [, acc] of accounts) {
-        try { if (acc.client) await acc.client.destroy(); } catch {}
+      for (const [id, acc] of accounts) {
+        try { if (acc.client) await acc.client.destroy(); } catch (err) {
+          console.warn(`[before-quit] Erro ao destruir cliente ${id}:`, err.message);
+        }
       }
       app.quit();
     }
