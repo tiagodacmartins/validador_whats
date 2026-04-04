@@ -535,6 +535,7 @@ ipcMain.handle('connect-db', async (_event, config) => {
     await tryConnectDb(config);
     saveDbConfig(config);
     broadcastDbStatus({ connected: true });
+    await ensureDashboardTables();
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
@@ -607,6 +608,64 @@ async function savePhone(phone, hasWa, checkedAt) {
     );
   } catch (err) {
     console.warn('[savePhone] Erro ao persistir cache:', err.message);
+  }
+}
+
+async function ensureDashboardTables() {
+  if (!pool) return;
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS validation_runs (
+        id          SERIAL PRIMARY KEY,
+        files       TEXT NOT NULL,
+        total       INT NOT NULL DEFAULT 0,
+        valid       INT NOT NULL DEFAULT 0,
+        invalid     INT NOT NULL DEFAULT 0,
+        format_err  INT NOT NULL DEFAULT 0,
+        error_count INT NOT NULL DEFAULT 0,
+        duration_ms BIGINT NOT NULL DEFAULT 0,
+        created_at  TIMESTAMP NOT NULL
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS account_usage_daily (
+        account_id  TEXT NOT NULL,
+        day         DATE NOT NULL,
+        total       INT NOT NULL DEFAULT 0,
+        PRIMARY KEY (account_id, day)
+      )
+    `);
+  } catch (err) {
+    console.warn('[ensureDashboardTables] Erro ao criar tabelas:', err.message);
+  }
+}
+
+async function saveValidationRun({ files, total, valid, invalid, formatErr, errorCount, durationMs }) {
+  if (!pool) return;
+  try {
+    await pool.query(
+      `INSERT INTO validation_runs (files, total, valid, invalid, format_err, error_count, duration_ms, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [files, total, valid, invalid, formatErr, errorCount, durationMs, nowBRT()]
+    );
+  } catch (err) {
+    console.warn('[saveValidationRun] Erro ao salvar run:', err.message);
+  }
+}
+
+async function saveAccountUsageBatch(runAcctCounts) {
+  if (!pool || !runAcctCounts.size) return;
+  try {
+    for (const [accountId, count] of runAcctCounts.entries()) {
+      await pool.query(
+        `INSERT INTO account_usage_daily (account_id, day, total)
+         VALUES ($1, CURRENT_DATE, $2)
+         ON CONFLICT (account_id, day) DO UPDATE SET total = account_usage_daily.total + $2`,
+        [accountId, count]
+      );
+    }
+  } catch (err) {
+    console.warn('[saveAccountUsageBatch] Erro ao salvar uso de contas:', err.message);
   }
 }
 
@@ -703,6 +762,12 @@ async function flushPendingRows(state, writers, columnMapping) {
     if (row.status === 'tem_whatsapp') {
       await writeChunk(writers.txtStream, buildTxtOutputLine(row.line, columnMapping) + '\n');
       state.validCount++;
+    } else if (row.status === 'sem_whatsapp' || row.status === 'sem_dados') {
+      state.invalidCount++;
+    } else if (row.status === 'formato_invalido') {
+      state.formatCount++;
+    } else if (row.status === 'erro') {
+      state.errorCount++;
     }
     state.processedCount++;
     state.nextWriteIndex++;
@@ -778,7 +843,7 @@ function createWindow() {
     const savedDbConfig = loadDbConfig();
     if (savedDbConfig) {
       tryConnectDb(savedDbConfig)
-        .then(() => broadcastDbStatus({ connected: true }))
+        .then(async () => { broadcastDbStatus({ connected: true }); await ensureDashboardTables(); })
         .catch(err => console.warn('[did-finish-load] Auto-conexão ao banco falhou (usuário reconecta manualmente):', err.message));
     }
   });
@@ -1150,6 +1215,8 @@ handleIpc('start-validation', async (_event, payload) => {
     }
 
     cancelRequested = false;
+    const runStartedAt = Date.now();
+    const acctSnapshotBefore = new Map([...accountStats.entries()].map(([id, s]) => [id, s.total]));
 
     if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
     let resolvedOutputDir = (payloadOutputDir && fs.existsSync(payloadOutputDir) && isSafeFilePath(payloadOutputDir))
@@ -1163,6 +1230,9 @@ handleIpc('start-validation', async (_event, payload) => {
     let currentFileValidCount = 0;
     let processedInBatch = 0;
     let totalValid = 0;
+    let totalInvalid = 0;
+    let totalFormat  = 0;
+    let totalError   = 0;
 
     if (resumeFrom && resumeState && JSON.stringify(resumeState.inputPaths) === JSON.stringify(normalizedInputPaths)) {
       startFileIndex = resumeState.fileIndex;
@@ -1215,7 +1285,10 @@ handleIpc('start-validation', async (_event, payload) => {
       const writeState = {
         nextWriteIndex: lineStart,
         processedCount: lineStart,
-        validCount: fileIdx === startFileIndex ? currentFileValidCount : 0,
+        validCount:   fileIdx === startFileIndex ? currentFileValidCount : 0,
+        invalidCount: 0,
+        formatCount:  0,
+        errorCount:   0,
         pendingRows: new Map()
       };
 
@@ -1362,7 +1435,10 @@ handleIpc('start-validation', async (_event, payload) => {
         };
       }
 
-      totalValid += writeState.validCount;
+      totalValid   += writeState.validCount;
+      totalInvalid += writeState.invalidCount;
+      totalFormat  += writeState.formatCount;
+      totalError   += writeState.errorCount;
       allZipFiles.push({ name: `${exportBase}.txt`, sourcePath: writers.txtPath });
       allZipFiles.push({ name: `${exportBase}.csv`, sourcePath: writers.csvPath });
       currentFileOutput = null;
@@ -1377,6 +1453,22 @@ handleIpc('start-validation', async (_event, payload) => {
       : `validados_${ts}.zip`;
     const zipOut = path.join(resolvedOutputDir, zipName);
     await createZip(zipOut, allZipFiles);
+
+    const runAcctCounts = new Map();
+    for (const [id, s] of accountStats.entries()) {
+      const delta = s.total - (acctSnapshotBefore.get(id) ?? 0);
+      if (delta > 0) runAcctCounts.set(id, delta);
+    }
+    await saveValidationRun({
+      files:      normalizedInputPaths.map(p => path.basename(p)).join(', '),
+      total:      globalTotal,
+      valid:      totalValid,
+      invalid:    totalInvalid,
+      formatErr:  totalFormat,
+      errorCount: totalError,
+      durationMs: Date.now() - runStartedAt
+    });
+    await saveAccountUsageBatch(runAcctCounts);
 
     return { ok: true, zipOut, total: globalTotal, valid: totalValid };
   } catch (err) {
@@ -1429,37 +1521,54 @@ ipcMain.on('win-maximize', (e) => {
 ipcMain.on('win-close', (e) => BrowserWindow.fromWebContents(e.sender)?.close());
 ipcMain.handle('get-app-version', () => app.getVersion());
 
-// Retorna estatísticas de uso por conta e totais diários do banco
+// Retorna estatísticas persistentes de runs, por conta e por dia
 ipcMain.handle('get-dashboard-stats', async () => {
-  const now = Date.now();
-  const accts = [...accountStats.entries()].map(([id, s]) => {
-    const acc = accounts.get(id);
-    return {
-      id,
-      name: acc?.info?.pushname || acc?.info?.wid?.user || id,
-      total:    s.total,
-      lastHour: s.history.filter(t => t > now - 3600000).length,
-      lastDay:  s.history.filter(t => t > now - 86400000).length
-    };
-  });
+  const result = { ok: true, runs: [], totals: null, accountStats: [], dailyStats: [] };
+  if (!pool) return result;
+  try {
+    const { rows: runs } = await pool.query(
+      `SELECT files, total, valid, invalid, format_err, error_count, duration_ms,
+              TO_CHAR(created_at, 'DD/MM/YYYY HH24:MI') AS created_at
+       FROM validation_runs ORDER BY created_at DESC LIMIT 50`
+    );
+    result.runs = runs;
 
-  let dailyStats = [];
-  if (pool) {
-    try {
-      const { rows } = await pool.query(
-        `SELECT DATE(checked_at)::text AS day,
-                COUNT(*)::int AS total,
-                SUM(CASE WHEN has_wa     THEN 1 ELSE 0 END)::int AS valid,
-                SUM(CASE WHEN NOT has_wa THEN 1 ELSE 0 END)::int AS invalid
-         FROM phone_cache GROUP BY 1 ORDER BY 1 DESC LIMIT 30`
-      );
-      dailyStats = rows;
-    } catch (err) {
-      console.warn('[get-dashboard-stats] Erro ao buscar stats diários:', err.message);
-    }
+    const { rows: [totals] } = await pool.query(
+      `SELECT COALESCE(SUM(total),0)::int       AS total,
+              COALESCE(SUM(valid),0)::int        AS valid,
+              COALESCE(SUM(invalid),0)::int      AS invalid,
+              COALESCE(SUM(error_count),0)::int  AS error_count
+       FROM validation_runs`
+    );
+    result.totals = totals;
+
+    const { rows: accts } = await pool.query(
+      `SELECT account_id,
+              SUM(total)::int AS total,
+              SUM(CASE WHEN day = CURRENT_DATE THEN total ELSE 0 END)::int AS today
+       FROM account_usage_daily
+       WHERE day >= CURRENT_DATE - INTERVAL '30 days'
+       GROUP BY account_id ORDER BY total DESC`
+    );
+    result.accountStats = accts.map(a => ({
+      ...a,
+      name: accounts.get(a.account_id)?.info?.pushname ||
+            accounts.get(a.account_id)?.info?.wid?.user ||
+            a.account_id
+    }));
+
+    const { rows: dailyStats } = await pool.query(
+      `SELECT DATE(checked_at)::text AS day,
+              COUNT(*)::int AS total,
+              SUM(CASE WHEN has_wa     THEN 1 ELSE 0 END)::int AS valid,
+              SUM(CASE WHEN NOT has_wa THEN 1 ELSE 0 END)::int AS invalid
+       FROM phone_cache GROUP BY 1 ORDER BY 1 DESC LIMIT 30`
+    );
+    result.dailyStats = dailyStats;
+  } catch (err) {
+    console.warn('[get-dashboard-stats] Erro:', err.message);
   }
-
-  return { ok: true, accountStats: accts, dailyStats };
+  return result;
 });
 
 app.whenReady().then(() => {

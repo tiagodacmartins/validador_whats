@@ -799,7 +799,7 @@
             <table>
               <thead><tr>
                 <th>Arquivo(s)</th><th>Total</th><th>Válidos</th><th>Inválidos</th>
-                <th>Erros</th><th>Taxa</th><th>Duração</th><th>Médio/linha</th>
+                <th>Erros</th><th>Taxa</th><th>Duração</th><th>Médio/linha</th><th>Data</th>
               </tr></thead>
               <tbody id="dashRunTbody"><tr><td colspan="8" style="color:#808080;text-align:center;">Nenhuma validação concluída nesta sessão.</td></tr></tbody>
             </table>
@@ -810,7 +810,7 @@
           <div class="table-wrap">
             <table>
               <thead><tr>
-                <th>Conta</th><th>Total</th><th>Últ. 1h</th><th>Últ. 24h</th>
+                <th>Conta</th><th>Total (30d)</th><th>Hoje</th>
               </tr></thead>
               <tbody id="dashAcctTbody"><tr><td colspan="4" style="color:#808080;text-align:center;">Sem dados.</td></tr></tbody>
             </table>
@@ -1076,8 +1076,6 @@
 
     let paused = false; // true quando o usuário clicou em "Pausar" (aguardando resposta do main)
 
-    // Histórico de runs concluídos nesta sessão
-    const sessionRuns = [];
 
     /**
      * Alterna a interface entre modo "em validação" e modo "ocioso".
@@ -1337,16 +1335,6 @@
         resultInfo.innerHTML = `ZIP: ${escapeHtml(res.zipOut)} <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px;margin-left:8px;" id="btnOpenFolder">&#128193; Abrir pasta</button>`;
         document.getElementById('btnOpenFolder').onclick = () => window.waApp.openPath(res.zipOut);
         logLine(`Concluído! ${res.valid} números com WhatsApp de ${res.total} total. ZIP: ${res.zipOut}`, 'log-ok');
-        sessionRuns.push({
-          files:      selectedFiles.map(f => f.filePath.split(/[\\/]/).pop()).join(', '),
-          total:      res.total,
-          valid:      state.valid,
-          invalid:    state.invalid,
-          format:     state.format,
-          error:      state.error,
-          cached:     state.cached,
-          durationMs: elapsedMs
-        });
         if (typeof Notification !== 'undefined') {
           new Notification('Validação concluída', { body: `${res.valid} números com WhatsApp em ${selectedFiles.length} arquivo(s).` });
         }
@@ -1511,64 +1499,66 @@
     }
 
     async function dashboardLoad() {
-      // ── Tiles de resumo ──────────────────────────────────────
-      const totals = sessionRuns.reduce((acc, r) => {
-        acc.total   += r.total;
-        acc.valid   += r.valid;
-        acc.invalid += r.invalid;
-        acc.error   += r.error;
-        return acc;
-      }, { total: 0, valid: 0, invalid: 0, error: 0 });
+      const stats = await window.waApp.getDashboardStats();
 
-      document.getElementById('dsTotalProc').textContent  = totals.total.toLocaleString('pt-BR');
-      document.getElementById('dsValidPct').textContent   = pct(totals.valid,   totals.total);
-      document.getElementById('dsInvalidPct').textContent = pct(totals.invalid, totals.total);
-      document.getElementById('dsErrorPct').textContent   = pct(totals.error,   totals.total);
+      // ── Tiles de resumo (totais acumulados do banco) ──────────────────────────
+      const t = stats.totals;
+      if (t) {
+        document.getElementById('dsTotalProc').textContent  = Number(t.total).toLocaleString('pt-BR');
+        document.getElementById('dsValidPct').textContent   = pct(t.valid,       t.total);
+        document.getElementById('dsInvalidPct').textContent = pct(t.invalid,     t.total);
+        document.getElementById('dsErrorPct').textContent   = pct(t.error_count, t.total);
+      } else {
+        ['dsTotalProc','dsValidPct','dsInvalidPct','dsErrorPct'].forEach(id => {
+          document.getElementById(id).textContent = 'Banco não conectado';
+        });
+      }
 
-      // ── Histórico de runs ────────────────────────────────────
+      // ── Histórico de runs ─────────────────────────────────────────────────────
       const runTbody = document.getElementById('dashRunTbody');
-      if (sessionRuns.length === 0) {
-        runTbody.innerHTML = '<tr><td colspan="8" style="color:#808080;text-align:center;">Nenhuma validação concluída nesta sessão.</td></tr>';
+      if (!stats.runs.length) {
+        runTbody.innerHTML = '<tr><td colspan="9" style="color:#808080;text-align:center;">Nenhuma validação registrada no banco ainda.</td></tr>';
       } else {
         runTbody.innerHTML = '';
-        for (const r of [...sessionRuns].reverse()) {
-          const nonCached  = r.total - r.cached;
-          const avgMs      = nonCached > 0 ? Math.round(r.durationMs / nonCached) : null;
+        for (const r of stats.runs) {
+          const avgMs = r.total > 0 ? Math.round(r.duration_ms / r.total) : null;
           const tr = document.createElement('tr');
           tr.innerHTML = `
             <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(r.files)}">${escapeHtml(r.files)}</td>
-            <td>${r.total.toLocaleString('pt-BR')}</td>
-            <td style="color:#006600;font-weight:bold;">${r.valid.toLocaleString('pt-BR')}</td>
-            <td style="color:#800000;">${r.invalid.toLocaleString('pt-BR')}</td>
-            <td style="color:#808000;">${r.error.toLocaleString('pt-BR')}</td>
+            <td>${Number(r.total).toLocaleString('pt-BR')}</td>
+            <td style="color:#006600;font-weight:bold;">${Number(r.valid).toLocaleString('pt-BR')}</td>
+            <td style="color:#800000;">${Number(r.invalid).toLocaleString('pt-BR')}</td>
+            <td style="color:#808000;">${Number(r.error_count).toLocaleString('pt-BR')}</td>
             <td>${pct(r.valid, r.total)}</td>
-            <td>${fmtMs(r.durationMs)}</td>
+            <td>${fmtMs(r.duration_ms)}</td>
             <td>${avgMs != null ? fmtMs(avgMs) : '—'}</td>
+            <td style="color:var(--muted);font-size:10px;">${escapeHtml(r.created_at || '')}</td>
           `;
           runTbody.appendChild(tr);
         }
       }
 
-      // ── Por conta ────────────────────────────────────────────
+      // ── Por conta ─────────────────────────────────────────────────────────────
       const acctTbody = document.getElementById('dashAcctTbody');
-      const stats = await window.waApp.getDashboardStats();
-      if (!stats.ok || !stats.accountStats.length) {
-        acctTbody.innerHTML = '<tr><td colspan="4" style="color:#808080;text-align:center;">Sem dados.</td></tr>';
+      if (!stats.accountStats.length) {
+        acctTbody.innerHTML = '<tr><td colspan="3" style="color:#808080;text-align:center;">Sem dados.</td></tr>';
       } else {
         acctTbody.innerHTML = '';
         for (const a of stats.accountStats) {
           const tr = document.createElement('tr');
-          const label = a.name !== a.id ? `${escapeHtml(a.name)}<br><span style="font-size:10px;color:#808080;">${escapeHtml(a.id)}</span>` : escapeHtml(a.id);
-          tr.innerHTML = `<td>${label}</td><td>${a.total.toLocaleString('pt-BR')}</td><td>${a.lastHour.toLocaleString('pt-BR')}</td><td>${a.lastDay.toLocaleString('pt-BR')}</td>`;
+          const label = a.name !== a.account_id
+            ? `${escapeHtml(a.name)}<br><span style="font-size:10px;color:#808080;">${escapeHtml(a.account_id)}</span>`
+            : escapeHtml(a.account_id);
+          tr.innerHTML = `<td>${label}</td><td>${Number(a.total).toLocaleString('pt-BR')}</td><td>${Number(a.today).toLocaleString('pt-BR')}</td>`;
           acctTbody.appendChild(tr);
         }
       }
 
-      // ── Por dia (banco) ──────────────────────────────────────
-      const dailyTbody  = document.getElementById('dashDailyTbody');
-      const dailyNote   = document.getElementById('dashDailyNote');
-      if (!stats.ok || !stats.dailyStats.length) {
-        dailyNote.textContent = stats.dailyStats?.length === 0
+      // ── Por dia (banco phone_cache) ───────────────────────────────────────────
+      const dailyTbody = document.getElementById('dashDailyTbody');
+      const dailyNote  = document.getElementById('dashDailyNote');
+      if (!stats.dailyStats.length) {
+        dailyNote.textContent = stats.ok
           ? 'Banco conectado, mas sem registros ainda.'
           : 'Banco de dados não conectado. Conecte na aba Banco de Telefones para ver estatísticas por dia.';
         dailyNote.style.display = '';
