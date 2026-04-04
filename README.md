@@ -84,6 +84,8 @@ O app suporta cache em PostgreSQL (ex: Supabase) para evitar revalidar números 
 
 Na aba **Banco de Telefones**, preencha as credenciais de conexão. Após conectar, o banco é reutilizado automaticamente nas próximas sessões.
 
+Em build empacotado ou com `NODE_ENV=production`, conexões SSL usam `rejectUnauthorized: true` automaticamente.
+
 **Tabela necessária:**
 
 ```sql
@@ -137,9 +139,10 @@ O app usa **3 processos Electron**:
 
 **Fluxo de dados:**
 1. Renderer clica botão → `ipcRenderer.invoke('start-validation', config)`
-2. Main processa validação em loop paralelo
+2. Main processa validação em loop paralelo com leitura via streaming
 3. Main envia `webContents.send('progress', {...})` a cada linha processada
-4. Renderer atualiza tabela + contadores em tempo real
+4. Main grava `.txt` e `.csv` incrementalmente em disco
+5. Renderer atualiza tabela + contadores em tempo real
 
 **Arquivos chave:**
 - `main.js` — Lógica de validação, IPC handlers, WhatsApp clients
@@ -190,6 +193,14 @@ Certifique-se de que `ssl: true` está configurado. Exemplos:
 - **Supabase**: SSL é obrigatório, já está ativado
 - **PostgreSQL local**: Considere ativar se em rede pública
 
+Quando o app está empacotado ou executando com `NODE_ENV=production`, o cliente PostgreSQL passa a validar o certificado do servidor com `rejectUnauthorized: true`.
+
+### IPC Rate Limiting
+
+- Canais mais caros (`start-validation`, `search-cache`, `revalidate-phone`, `validate-phones-manual`, metadados de arquivo) têm rate limiting no main process
+- O objetivo é reduzir spam acidental da interface e abuso em caso de renderer comprometido
+- Em estouro de limite, o retorno inclui `code: RATE_LIMITED`
+
 ### HTML Escaping
 
 Todo texto inserido via `.innerHTML` passa por `escapeHtml()` para evitar XSS.
@@ -219,9 +230,9 @@ Todo texto inserido via `.innerHTML` passa por `escapeHtml()` para evitar XSS.
 
 ### "Out of memory / Arquivo muito grande"
 
-- Arquivos > 1 GB podem ocupar muita RAM
-- **Solução**: Divida o arquivo em chunks menores (ex: 500K linhas cada)
-- A partir de v2.0, será implementado streaming para arquivos gigantes
+- O pipeline principal agora lê arquivos por streaming e escreve resultados incrementalmente em disco
+- Isso reduz drasticamente o uso de RAM mesmo com arquivos muito grandes
+- Ainda vale manter espaço livre em disco suficiente para `.txt`, `.csv` e `.zip`
 
 ### "Resultado não aparece"
 
@@ -236,11 +247,11 @@ Todo texto inserido via `.innerHTML` passa por `escapeHtml()` para evitar XSS.
 
 | Métrica | Limite Típico | Notas |
 |---------|-------|-------|
-| Linhas por arquivo | Sem limite | Recomendado < 500K linhas |
+| Linhas por arquivo | Escala por streaming | Testado para leitura sem carregar tudo em RAM |
 | Contas simultâneas | 5-10 | Mais = mais rápido, maior risco de bloqueio |
 | Delay entre consultas | 2000-10000 ms | Defaults (2-5s) são seguros |
 | Pausa entre lotes | 10000-60000 ms | Prevents anti-spam |
-| Cache de sessão | ~100K linhas | Mantém em memória durante execução |
+| Cache de sessão | Cresce por telefones consultados | Resultados de arquivo não ficam mais inteiros em memória |
 
 ---
 
@@ -251,6 +262,7 @@ Todo texto inserido via `.innerHTML` passa por `escapeHtml()` para evitar XSS.
 ```
 .
 ├── main.js                      # Processo principal
+├── lib/                         # Utilitários de streaming, TLS e rate limiting
 ├── preload.js                   # Ponte principal
 ├── preload-banco.js             # Ponte banco
 ├── preload-connect.js           # Ponte conexão
@@ -258,11 +270,25 @@ Todo texto inserido via `.innerHTML` passa por `escapeHtml()` para evitar XSS.
 ├── banco-telefones.html         # UI banco
 ├── whatsapp-connect.html        # UI conexão
 ├── package.json                 # Dependências
+├── tests/                       # Testes unitários Jest
 └── build/
-    ├── gen-icon.js              # Gerador de ícone
-    ├── icon.ico                 # Ícone Win98
-    └── make-dist.js             # Gerador ZIP
+  ├── gen-icon.js              # Gerador de ícone
+  ├── icon.ico                 # Ícone Win98
+  └── make-dist.js             # Gerador ZIP
 ```
+
+### Comandos
+
+```bash
+npm start
+npm test
+npm run dist
+```
+
+### Cobertura atual
+
+- Testes unitários para rate limiting, decisão de TLS estrito e streaming de arquivo
+- Build continua sendo gerado por `npm run dist`
 
 ### Rodando em dev
 

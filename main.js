@@ -13,6 +13,8 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const archiver = require('archiver');
 const { Pool } = require('pg');
 const QRCode = require('qrcode');
+const { countNonEmptyLines, readFirstNonEmptyLine, streamNonEmptyLines } = require('./lib/file-streaming');
+const { createRateLimiter, getRateLimitKey, isSafeFilePath, shouldUseStrictTls } = require('./lib/runtime-utils');
 
 // ── Constantes ────────────────────────────────────────────────
 const EDGE_PATH_X86 = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
@@ -59,16 +61,35 @@ class Semaphore {
 }
 const validationSemaphore = new Semaphore(10); // máx 10 promises simultâneas
 
-// ── Path traversal validation ────────────────────────────────
-function isSafeFilePath(userPath) {
-  try {
-    const resolved = path.resolve(userPath);
-    const cwd = path.resolve(process.cwd());
-    // Verifica se o caminho resolvido começa com CWD e não tem ..
-    return resolved.startsWith(cwd) && !resolved.includes('..' + path.sep);
-  } catch {
-    return false;
-  }
+const ipcRateLimiter = createRateLimiter();
+const IPC_RATE_LIMITS = {
+  'get-file-info':        { limit: 8,  windowMs: 2000 },
+  'get-file-columns':     { limit: 12, windowMs: 2000 },
+  'search-cache':         { limit: 20, windowMs: 5000 },
+  'revalidate-phone':     { limit: 5,  windowMs: 10000 },
+  'start-validation':     { limit: 2,  windowMs: 10000 },
+  'validate-phones-manual': { limit: 4, windowMs: 10000 }
+};
+
+function handleIpc(channel, handler, options = {}) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    const rateLimit = options.rateLimit || IPC_RATE_LIMITS[channel];
+    if (rateLimit) {
+      const result = ipcRateLimiter.consume(getRateLimitKey(channel, event), rateLimit);
+      if (!result.ok) {
+        if (typeof options.onRateLimit === 'function') {
+          return options.onRateLimit(result.retryAfterMs);
+        }
+        return {
+          ok: false,
+          code: 'RATE_LIMITED',
+          error: 'Muitas requisicoes em pouco tempo. Aguarde e tente novamente.',
+          retryAfterMs: result.retryAfterMs
+        };
+      }
+    }
+    return handler(event, ...args);
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -235,7 +256,9 @@ function saveAccountIds() {
   try {
     const p = path.join(app.getPath('userData'), 'wa-accounts.json');
     fs.writeFileSync(p, JSON.stringify([...accounts.keys()]), 'utf8');
-  } catch {}
+  } catch (err) {
+    console.warn('[saveAccountIds] Erro ao salvar IDs de contas:', err.message);
+  }
 }
 
 /** Carrega os IDs de contas salvas em disco. Retorna [] se não existir. */
@@ -438,7 +461,7 @@ async function tryConnectDb(config) {
     database:          String(config.database || 'postgres').trim(),
     user:              String(config.user).trim(),
     password:          String(config.password),
-    ssl:               config.ssl ? { rejectUnauthorized: process.env.NODE_ENV === 'production' } : false,
+    ssl:               config.ssl ? { rejectUnauthorized: shouldUseStrictTls({ nodeEnv: process.env.NODE_ENV, isPackaged: app.isPackaged }) } : false,
     max:               10,
     idleTimeoutMillis: 30000
   });
@@ -517,7 +540,9 @@ async function lookupPhone(phone) {
       phoneCache[phone] = entry; // popula cache em memória
       return entry;
     }
-  } catch { /* ignora erros de banco para não interromper a validação */ }
+  } catch (err) {
+    console.warn('[lookupPhone] Erro ao consultar cache no banco:', err.message);
+  }
   return null;
 }
 
@@ -534,7 +559,9 @@ async function savePhone(phone, hasWa, checkedAt) {
        ON CONFLICT (phone) DO UPDATE SET has_wa = $2, checked_at = $3`,
       [phone, hasWa, checkedAt]
     );
-  } catch { /* ignora erros de banco para não interromper a validação */ }
+  } catch (err) {
+    console.warn('[savePhone] Erro ao persistir cache:', err.message);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -551,42 +578,102 @@ async function savePhone(phone, hasWa, checkedAt) {
  * @param {object[]} allResults          Todos os resultados incluindo inválidos e erros.
  * @param {object}   columnMapping       Mapeamento de colunas: { phone: number, variables: number[] }.
  */
-function buildFileOutput(validOriginalLines, allResults, columnMapping = {}) {
-  const phoneCol = columnMapping.phone     ?? 0;
+function buildTxtHeader(columnMapping = {}) {
   const varCols  = columnMapping.variables ?? [2]; // padrão: coluna C como variável 1
-
   const varHeaders = varCols.map((_, i) => `variable_${i + 1}`);
-  const txtLines   = [['phone', ...varHeaders].join(';')];
+  return ['phone', ...varHeaders].join(';');
+}
 
-  for (const line of validOriginalLines) {
-    const cols     = line.split(';');
-    const rawPhone = cols[phoneCol]?.trim() || '';
-    const phone    = normalizePhone(rawPhone);
-    const vars     = varCols.map(ci => cols[ci]?.trim() || '');
-    txtLines.push([phone ? '+' + phone : rawPhone, ...vars].join(';'));
-  }
+function buildTxtOutputLine(line, columnMapping = {}) {
+  const phoneCol = columnMapping.phone     ?? 0;
+  const varCols  = columnMapping.variables ?? [2];
+  const cols     = line.split(';');
+  const rawPhone = cols[phoneCol]?.trim() || '';
+  const phone    = normalizePhone(rawPhone);
+  const vars     = varCols.map(ci => cols[ci]?.trim() || '');
+  return [phone ? '+' + phone : rawPhone, ...vars].join(';');
+}
 
-  const csvLines = ['linha_original,telefone_normalizado,status,detalhes'];
-  for (const r of allResults) {
-    const normalizedDisplay = r.normalized ? '+' + r.normalized : r.normalized;
-    csvLines.push([
-      `"${String(r.line).replace(/"/g, '""')}"`,
-      `"${String(normalizedDisplay).replace(/"/g, '""')}"`,
-      `"${String(r.status).replace(/"/g, '""')}"`,
-      `"${String(r.details).replace(/"/g, '""')}"`
-    ].join(','));
-  }
+function csvCell(value) {
+  return `"${String(value ?? '').replace(/"/g, '""')}"`;
+}
 
+function buildCsvOutputLine(row) {
+  const normalizedDisplay = row.normalized ? '+' + row.normalized : row.normalized;
+  return [
+    csvCell(row.line),
+    csvCell(normalizedDisplay),
+    csvCell(row.status),
+    csvCell(row.details)
+  ].join(',');
+}
+
+function waitForStreamEvent(stream, eventName) {
+  return new Promise((resolve, reject) => {
+    const handleSuccess = () => {
+      stream.off('error', handleError);
+      resolve();
+    };
+    const handleError = err => {
+      stream.off(eventName, handleSuccess);
+      reject(err);
+    };
+
+    stream.once(eventName, handleSuccess);
+    stream.once('error', handleError);
+  });
+}
+
+async function writeChunk(stream, chunk) {
+  if (stream.write(chunk, 'utf8')) return;
+  await waitForStreamEvent(stream, 'drain');
+}
+
+async function closeWriteStream(stream) {
+  stream.end();
+  await waitForStreamEvent(stream, 'finish');
+}
+
+function createOutputWriters(outputDir, exportBase, append = false) {
   return {
-    txtContent: txtLines.join('\n'),
-    csvContent: csvLines.join('\n')
+    txtPath: path.join(outputDir, `${exportBase}.txt`),
+    csvPath: path.join(outputDir, `${exportBase}.csv`),
+    txtStream: fs.createWriteStream(path.join(outputDir, `${exportBase}.txt`), { flags: append ? 'a' : 'w' }),
+    csvStream: fs.createWriteStream(path.join(outputDir, `${exportBase}.csv`), { flags: append ? 'a' : 'w' })
   };
+}
+
+async function initializeOutputWriters(writers, columnMapping, append = false) {
+  if (append) return;
+  await writeChunk(writers.txtStream, buildTxtHeader(columnMapping) + '\n');
+  await writeChunk(writers.csvStream, 'linha_original,telefone_normalizado,status,detalhes\n');
+}
+
+async function flushPendingRows(state, writers, columnMapping) {
+  while (state.pendingRows.has(state.nextWriteIndex)) {
+    const row = state.pendingRows.get(state.nextWriteIndex);
+    state.pendingRows.delete(state.nextWriteIndex);
+    await writeChunk(writers.csvStream, buildCsvOutputLine(row) + '\n');
+    if (row.status === 'tem_whatsapp') {
+      await writeChunk(writers.txtStream, buildTxtOutputLine(row.line, columnMapping) + '\n');
+      state.validCount++;
+    }
+    state.processedCount++;
+    state.nextWriteIndex++;
+  }
+}
+
+async function closeOutputWriters(writers) {
+  await Promise.all([
+    closeWriteStream(writers.txtStream),
+    closeWriteStream(writers.csvStream)
+  ]);
 }
 
 /**
  * Cria um arquivo ZIP com os arquivos fornecidos.
  * @param {string}   zipPath  Caminho completo do ZIP a ser criado.
- * @param {{ name: string, content: string }[]} files  Arquivos a incluir.
+ * @param {{ name: string, content?: string, sourcePath?: string }[]} files  Arquivos a incluir.
  */
 function createZip(zipPath, files) {
   return new Promise((resolve, reject) => {
@@ -595,8 +682,9 @@ function createZip(zipPath, files) {
     output.on('close', resolve);
     archive.on('error', reject);
     archive.pipe(output);
-    for (const { name, content } of files) {
-      archive.append(content, { name });
+    for (const { name, content, sourcePath } of files) {
+      if (sourcePath) archive.file(sourcePath, { name });
+      else archive.append(content, { name });
     }
     archive.finalize();
   });
@@ -662,10 +750,11 @@ ipcMain.handle('pick-file', async () => {
     filters:    [{ name: 'Text Files', extensions: ['txt'] }]
   });
   if (result.canceled || !result.filePaths.length) return null;
-  return result.filePaths.map(fp => ({
-    filePath: fp,
-    count: fs.readFileSync(fp, 'utf8').split(/\r?\n/).filter(Boolean).length
-  }));
+  const files = await Promise.all(result.filePaths.map(async filePath => ({
+    filePath,
+    count: await countNonEmptyLines(filePath)
+  })));
+  return files;
 });
 
 // Abre o seletor de pasta de saída
@@ -683,48 +772,56 @@ ipcMain.handle('pick-output-folder', async () => {
 // ═══════════════════════════════════════════════════════════════
 
 // Retorna contagem de linhas de um ou mais arquivos
-ipcMain.handle('get-file-info', (_event, filePaths) => {
+handleIpc('get-file-info', async (_event, filePaths) => {
   try {
-    const paths = Array.isArray(filePaths) ? filePaths : [filePaths];
-    return paths
-      .filter(fp => fs.existsSync(fp) && isSafeFilePath(fp))
-      .map(fp => {
-        try {
-          return {
-            filePath: fp,
-            count: fs.readFileSync(fp, 'utf8').split(/\r?\n/).filter(Boolean).length
-          };
-        } catch (err) {
-          console.warn('[get-file-info] Erro ao ler arquivo:', err.message);
-          return null;
-        }
-      })
-      .filter(Boolean);
+    const paths = (Array.isArray(filePaths) ? filePaths : [filePaths])
+      .filter(fp => typeof fp === 'string' && fs.existsSync(fp) && isSafeFilePath(fp));
+    const files = await Promise.all(paths.map(async filePath => {
+      try {
+        return {
+          filePath,
+          count: await countNonEmptyLines(filePath)
+        };
+      } catch (err) {
+        console.warn('[get-file-info] Erro ao ler arquivo:', err.message);
+        return null;
+      }
+    }));
+    return files.filter(Boolean);
   } catch (err) {
     console.error('[get-file-info] Erro geral:', err.message);
     return [];
   }
+}, {
+  onRateLimit: () => []
 });
 
 // Lê a primeira linha do arquivo e retorna as colunas detectadas.
 // Usado pelo modal de mapeamento de colunas no frontend.
-ipcMain.handle('get-file-columns', (_event, filePath) => {
+handleIpc('get-file-columns', async (_event, filePath) => {
   try {
     if (!fs.existsSync(filePath) || !isSafeFilePath(filePath)) {
       console.warn('[get-file-columns] Path validation failed:', filePath);
       return { columns: [] };
     }
-    const firstLine = fs.readFileSync(filePath, 'utf8').split(/\r?\n/).find(l => l.trim());
+    const firstLine = await readFirstNonEmptyLine(filePath);
     if (!firstLine) return { columns: [] };
-    const columns = firstLine.split(';').map((v, i) => ({
-      index: i,
-      label: `Coluna ${String.fromCharCode(65 + i)} — ${v.trim().slice(0, 40) || '(vazio)'}`
+    const columns = firstLine.split(';').map((value, index) => ({
+      index,
+      label: `Coluna ${String.fromCharCode(65 + index)} — ${value.trim().slice(0, 40) || '(vazio)'}`
     }));
     return { columns };
   } catch (err) {
     console.error('[get-file-columns] Erro:', err.message);
     return { columns: [] };
   }
+}, {
+  onRateLimit: retryAfterMs => ({
+    columns: [],
+    error: 'Muitas leituras de colunas em pouco tempo.',
+    code: 'RATE_LIMITED',
+    retryAfterMs
+  })
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -881,7 +978,7 @@ ipcMain.handle('get-cache-info', async () => {
 });
 
 // Pesquisa paginada no banco com filtros de número e status de WhatsApp
-ipcMain.handle('search-cache', async (_event, query, filter, offset = 0, pageSize = 100) => {
+handleIpc('search-cache', async (_event, query, filter, offset = 0, pageSize = 100) => {
   if (!pool) return { rows: [], total: 0, error: 'Banco não conectado.' };
   try {
     const q      = String(query || '').replace(/\D/g, '');
@@ -921,10 +1018,18 @@ ipcMain.handle('search-cache', async (_event, query, filter, offset = 0, pageSiz
     console.error('[search-cache] Erro:', err.message);
     return { rows: [], total: 0, error: err.message };
   }
+}, {
+  onRateLimit: retryAfterMs => ({
+    rows: [],
+    total: 0,
+    error: 'Muitas pesquisas em pouco tempo. Aguarde antes de tentar novamente.',
+    code: 'RATE_LIMITED',
+    retryAfterMs
+  })
 });
 
 // Reconsulta um número específico no WhatsApp e atualiza o banco
-ipcMain.handle('revalidate-phone', async (_event, phone) => {
+handleIpc('revalidate-phone', async (_event, phone) => {
   if (!pool) return { ok: false, error: 'Banco não conectado.' };
   try {
     const result    = await getNumberIdWithRetry(phone);
@@ -970,94 +1075,108 @@ ipcMain.handle('get-resume-state', () => ({
  *   - Pausa automática entre lotes (batchSize/batchPauseMs).
  *   - Mapeamento customizável de colunas (columnMapping).
  */
-ipcMain.handle('start-validation', async (_event, payload) => {
+handleIpc('start-validation', async (_event, payload) => {
   try {
     const {
       inputPaths,
-      minDelayMs    = 2000,
-      maxDelayMs    = 5000,
-      batchSize     = 150,
-      batchPauseMs  = 30000,
-      resumeFrom    = false,
-      outputDir:    payloadOutputDir = '',
+      minDelayMs = 2000,
+      maxDelayMs = 5000,
+      batchSize = 150,
+      batchPauseMs = 30000,
+      resumeFrom = false,
+      outputDir: payloadOutputDir = '',
       forceRevalidate = false,
-      bankOnly        = false,
-      columnMapping   = {}
+      bankOnly = false,
+      columnMapping = {}
     } = payload;
 
-    // Modo padrão requer ao menos uma conta conectada
+    const normalizedInputPaths = (inputPaths || [])
+      .filter(filePath => typeof filePath === 'string' && fs.existsSync(filePath) && isSafeFilePath(filePath));
+
     if (!bankOnly && getConnectedClients().length === 0) {
       return { ok: false, error: 'Nenhuma conta WhatsApp conectada.' };
     }
-    if (!inputPaths?.length) return { ok: false, error: 'Nenhum arquivo selecionado.' };
+    if (!normalizedInputPaths.length) {
+      return { ok: false, error: 'Nenhum arquivo válido selecionado.' };
+    }
+    if (normalizedInputPaths.length !== inputPaths.length) {
+      return { ok: false, error: 'Um ou mais caminhos de entrada são inválidos.' };
+    }
 
     cancelRequested = false;
 
-    // Garante que a pasta de saída padrão existe
     if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-    const resolvedOutputDir = (payloadOutputDir && fs.existsSync(payloadOutputDir))
+    let resolvedOutputDir = (payloadOutputDir && fs.existsSync(payloadOutputDir) && isSafeFilePath(payloadOutputDir))
       ? payloadOutputDir
       : OUTPUT_DIR;
 
-    // ── Inicializa ou restaura estado de retomada ──────────────
-    let startFileIndex    = 0;
-    let startLineIndex    = 0;
+    let startFileIndex = 0;
+    let startLineIndex = 0;
     let completedZipFiles = [];
-    let currentAllResults = [];
-    let currentValidLines = [];
-    let processedInBatch  = 0;
-    let totalValid        = 0;
+    let currentFileOutput = null;
+    let currentFileValidCount = 0;
+    let processedInBatch = 0;
+    let totalValid = 0;
 
-    if (resumeFrom && resumeState && JSON.stringify(resumeState.inputPaths) === JSON.stringify(inputPaths)) {
-      startFileIndex    = resumeState.fileIndex;
-      startLineIndex    = resumeState.startIndex;
-      completedZipFiles = resumeState.completedZipFiles  || [];
-      currentAllResults = resumeState.allResults         || [];
-      currentValidLines = resumeState.validOriginalLines || [];
-      processedInBatch  = resumeState.processedInBatch   || 0;
-      totalValid        = resumeState.totalValid          || 0;
+    if (resumeFrom && resumeState && JSON.stringify(resumeState.inputPaths) === JSON.stringify(normalizedInputPaths)) {
+      startFileIndex = resumeState.fileIndex;
+      startLineIndex = resumeState.startIndex;
+      completedZipFiles = resumeState.completedZipFiles || [];
+      currentFileOutput = resumeState.currentFileOutput || null;
+      currentFileValidCount = resumeState.currentFileValidCount || 0;
+      processedInBatch = resumeState.processedInBatch || 0;
+      totalValid = resumeState.totalValid || 0;
+      resolvedOutputDir = resumeState.outputDir || resolvedOutputDir;
       resumeState = null;
     } else {
       resumeState = null;
       initSessionCache();
     }
 
-    // ── Pré-computa totais para a barra de progresso global ────
-    const fileLinesCount = inputPaths.map(p => {
-      try { return fs.readFileSync(p, 'utf8').split(/\r?\n/).map(x => x.trim()).filter(Boolean).length; }
-      catch { return 0; }
-    });
-    const globalTotal   = fileLinesCount.reduce((a, b) => a + b, 0);
-    let   globalCurrent = fileLinesCount.slice(0, startFileIndex).reduce((a, b) => a + b, 0) + startLineIndex;
+    const fileLinesCount = await Promise.all(normalizedInputPaths.map(async filePath => {
+      try {
+        return await countNonEmptyLines(filePath);
+      } catch (err) {
+        console.warn('[start-validation] Erro ao contar linhas do arquivo:', err.message);
+        return 0;
+      }
+    }));
+    const globalTotal = fileLinesCount.reduce((sum, count) => sum + count, 0);
+    let globalCurrent = fileLinesCount.slice(0, startFileIndex).reduce((sum, count) => sum + count, 0) + startLineIndex;
 
     const allZipFiles = [...completedZipFiles];
 
-    // ── Loop principal: itera sobre cada arquivo selecionado ───
-    for (let fileIdx = startFileIndex; fileIdx < inputPaths.length; fileIdx++) {
-      const inputPath = inputPaths[fileIdx];
-      const fileName  = path.basename(inputPath);
+    for (let fileIdx = startFileIndex; fileIdx < normalizedInputPaths.length; fileIdx++) {
+      const inputPath = normalizedInputPaths[fileIdx];
+      const fileName = path.basename(inputPath);
       if (!fs.existsSync(inputPath)) continue;
 
       const exportBase = path.basename(inputPath, path.extname(inputPath)) + '_validado';
-      const rawLines   = fs.readFileSync(inputPath, 'utf8')
-        .split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+      const lineStart = fileIdx === startFileIndex ? startLineIndex : 0;
+      const appendMode = fileIdx === startFileIndex && lineStart > 0 && currentFileOutput !== null;
+      const writers = createOutputWriters(resolvedOutputDir, exportBase, appendMode);
+      await initializeOutputWriters(writers, columnMapping, appendMode);
 
-      // Ao retomar, preserva resultados parciais do arquivo em curso
-      const lineStart        = fileIdx === startFileIndex ? startLineIndex    : 0;
-
-      // ── Loop paralelo: um worker por conta WhatsApp conectada ─
-      const connectedAccts  = bankOnly ? [] : getConnectedClients();
-      const lineResults     = new Array(rawLines.length).fill(undefined);
-
-      // Pré-preenche com resultados do resume (linhas já processadas)
-      const priorResults = fileIdx === startFileIndex ? currentAllResults : [];
-      for (let k = 0; k < lineStart; k++) lineResults[k] = priorResults[k];
-
-      let nextIdx            = lineStart;
+      const connectedAccts = bankOnly ? [] : getConnectedClients();
+      const workerClients = connectedAccts.length
+        ? connectedAccts.slice(0, validationSemaphore.max).map(acc => acc.client)
+        : [null];
+      const lineIterator = streamNonEmptyLines(inputPath, lineStart)[Symbol.asyncIterator]();
       let processedRealCount = fileIdx === startFileIndex ? processedInBatch : 0;
-      let batchPausePromise  = null;
+      let batchPausePromise = null;
+      const writeState = {
+        nextWriteIndex: lineStart,
+        processedCount: lineStart,
+        validCount: fileIdx === startFileIndex ? currentFileValidCount : 0,
+        pendingRows: new Map()
+      };
 
-      const runWorker = async (client) => {
+      const getNextLine = async () => {
+        const { value, done } = await lineIterator.next();
+        return done ? null : value;
+      };
+
+      const runWorker = async client => {
         await validationSemaphore.acquire();
         try {
           while (true) {
@@ -1065,71 +1184,71 @@ ipcMain.handle('start-validation', async (_event, payload) => {
             if (batchPausePromise) await batchPausePromise;
             if (cancelRequested) break;
 
-          const myIdx = nextIdx++;
-          if (myIdx >= rawLines.length) break;
+            const item = await getNextLine();
+            if (!item) break;
 
-          const originalLine = rawLines[myIdx];
-          const normalized   = extractPhoneFromLine(originalLine, columnMapping.phone ?? 0);
-          let row;
+            const originalLine = item.line;
+            const normalized = extractPhoneFromLine(originalLine, columnMapping.phone ?? 0);
+            let row;
 
-          if (!normalized) {
-            row = {
-              line: originalLine, normalized: '',
-              status:  'formato_invalido',
-              details: 'Primeira coluna não contém telefone válido'
-            };
-          } else if (!forceRevalidate && await lookupPhone(normalized)) {
-            const { hasWa: exists } = phoneCache[normalized];
-            row = {
-              line: originalLine, normalized,
-              status:    exists ? 'tem_whatsapp' : 'sem_whatsapp',
-              details:   (exists ? 'Registrado no WhatsApp' : 'Não registrado') + ' (banco)',
-              fromCache: true
-            };
-          } else if (bankOnly) {
-            row = {
-              line: originalLine, normalized,
-              status: 'sem_dados', details: 'Não encontrado no banco',
-              fromCache: true
-            };
-          } else {
-            try {
-              const result    = await getNumberIdWithRetry(normalized, client);
-              const exists    = !!result;
-              const checkedAt = nowBRT();
-              phoneCache[normalized] = { hasWa: exists, checkedAt };
-              await savePhone(normalized, exists, checkedAt);
+            if (!normalized) {
+              row = {
+                line: originalLine, normalized: '',
+                status: 'formato_invalido',
+                details: 'Primeira coluna não contém telefone válido'
+              };
+            } else if (!forceRevalidate && await lookupPhone(normalized)) {
+              const { hasWa: exists } = phoneCache[normalized];
               row = {
                 line: originalLine, normalized,
-                status:  exists ? 'tem_whatsapp' : 'sem_whatsapp',
-                details: exists ? 'Registrado no WhatsApp' : 'Não registrado'
+                status: exists ? 'tem_whatsapp' : 'sem_whatsapp',
+                details: (exists ? 'Registrado no WhatsApp' : 'Não registrado') + ' (banco)',
+                fromCache: true
               };
-            } catch (err) {
+            } else if (bankOnly) {
               row = {
                 line: originalLine, normalized,
-                status:  'erro',
-                details: (err.message || String(err)).replace(/[\r\n]+/g, ' ')
+                status: 'sem_dados',
+                details: 'Não encontrado no banco',
+                fromCache: true
               };
+            } else {
+              try {
+                const result = await getNumberIdWithRetry(normalized, client);
+                const exists = !!result;
+                const checkedAt = nowBRT();
+                phoneCache[normalized] = { hasWa: exists, checkedAt };
+                await savePhone(normalized, exists, checkedAt);
+                row = {
+                  line: originalLine, normalized,
+                  status: exists ? 'tem_whatsapp' : 'sem_whatsapp',
+                  details: exists ? 'Registrado no WhatsApp' : 'Não registrado'
+                };
+              } catch (err) {
+                row = {
+                  line: originalLine, normalized,
+                  status: 'erro',
+                  details: (err.message || String(err)).replace(/[\r\n]+/g, ' ')
+                };
+              }
             }
-          }
 
-          lineResults[myIdx] = row;
-          globalCurrent++;
+            writeState.pendingRows.set(item.index, row);
+            await flushPendingRows(writeState, writers, columnMapping);
+            globalCurrent++;
 
-          mainWindow?.webContents.send('validation-progress', {
-            current:    globalCurrent,
-            total:      globalTotal,
-            fileIndex:  fileIdx,
-            fileCount:  inputPaths.length,
-            fileName,
-            row,
-            batchCount: processedRealCount,
-            batchSize:  Number(batchSize)
-          });
+            mainWindow?.webContents.send('validation-progress', {
+              current: globalCurrent,
+              total: globalTotal,
+              fileIndex: fileIdx,
+              fileCount: normalizedInputPaths.length,
+              fileName,
+              row,
+              batchCount: processedRealCount,
+              batchSize: Number(batchSize)
+            });
 
-          if (!row.fromCache) {
-            const moreItems = nextIdx < rawLines.length;
-            if (moreItems) {
+            if (!row.fromCache) {
               processedRealCount++;
               if (processedRealCount >= Number(batchSize) && !batchPausePromise) {
                 broadcastWaStatus({ type: 'pause', message: `Pausa de lote por ${batchPauseMs}ms.` });
@@ -1140,43 +1259,36 @@ ipcMain.handle('start-validation', async (_event, payload) => {
               }
             }
           }
-          }
         } finally {
           validationSemaphore.release();
         }
       };
 
-      await Promise.all(
-        connectedAccts.length
-          ? connectedAccts.map(acc => runWorker(acc.client))
-          : [runWorker(null)]
-      );
+      await Promise.all(workerClients.map(client => runWorker(client)));
+      if (typeof lineIterator.return === 'function') await lineIterator.return();
+      await flushPendingRows(writeState, writers, columnMapping);
+      await closeOutputWriters(writers);
 
-      // ── Cancel/Pause: salva ponto de retomada ─────────────────
       if (cancelRequested) {
-        const partialAllResults = lineResults.filter(r => r !== undefined);
-        const partialValidLines = partialAllResults
-          .filter(r => r.status === 'tem_whatsapp').map(r => r.line);
-
         resumeState = {
-          inputPaths,
-          fileIndex:          fileIdx,
-          startIndex:         partialAllResults.length,
-          allResults:         partialAllResults,
-          validOriginalLines: partialValidLines,
-          processedInBatch:   processedRealCount,
+          inputPaths: normalizedInputPaths,
+          fileIndex: fileIdx,
+          startIndex: writeState.processedCount,
+          currentFileOutput: { txtPath: writers.txtPath, csvPath: writers.csvPath },
+          currentFileValidCount: writeState.validCount,
+          processedInBatch: processedRealCount,
           totalValid,
-          completedZipFiles:  [...allZipFiles]
+          outputDir: resolvedOutputDir,
+          completedZipFiles: [...allZipFiles]
         };
 
         let partialZip = null;
         try {
-          const ts           = makeTimestamp();
-          partialZip         = path.join(resolvedOutputDir, `validados_parcial_${ts}.zip`);
+          const ts = makeTimestamp();
+          partialZip = path.join(resolvedOutputDir, `validados_parcial_${ts}.zip`);
           const partialFiles = [...allZipFiles];
-          const { txtContent, csvContent } = buildFileOutput(partialValidLines, partialAllResults, columnMapping);
-          partialFiles.push({ name: `${exportBase}_parcial.txt`, content: txtContent });
-          partialFiles.push({ name: `${exportBase}_parcial.csv`, content: csvContent });
+          partialFiles.push({ name: `${exportBase}_parcial.txt`, sourcePath: writers.txtPath });
+          partialFiles.push({ name: `${exportBase}_parcial.csv`, sourcePath: writers.csvPath });
           if (partialFiles.length) await createZip(partialZip, partialFiles);
         } catch (err) {
           console.warn('[start-validation] Erro ao criar ZIP parcial:', err.message);
@@ -1184,38 +1296,32 @@ ipcMain.handle('start-validation', async (_event, payload) => {
         }
 
         return {
-          ok: true, canceled: true,
-          total:     globalTotal,
+          ok: true,
+          canceled: true,
+          total: globalTotal,
           processed: globalCurrent,
-          valid:     totalValid + partialValidLines.length,
+          valid: totalValid + writeState.validCount,
           partialZip
         };
       }
 
-      // Constrói resultados ordenados do arquivo
-      const allResults         = lineResults.filter(r => r !== undefined);
-      const validOriginalLines = allResults.filter(r => r.status === 'tem_whatsapp').map(r => r.line);
-
-      // Arquivo concluído — adiciona TXT e CSV ao ZIP final
-      totalValid += validOriginalLines.length;
-      const { txtContent, csvContent } = buildFileOutput(validOriginalLines, allResults, columnMapping);
-      allZipFiles.push({ name: `${exportBase}.txt`, content: txtContent });
-      allZipFiles.push({ name: `${exportBase}.csv`, content: csvContent });
-
-    } // fim loop de arquivos
+      totalValid += writeState.validCount;
+      allZipFiles.push({ name: `${exportBase}.txt`, sourcePath: writers.txtPath });
+      allZipFiles.push({ name: `${exportBase}.csv`, sourcePath: writers.csvPath });
+      currentFileOutput = null;
+      currentFileValidCount = 0;
+    }
 
     resumeState = null;
 
-    // Empacota todos os arquivos gerados em um único ZIP
-    const ts      = makeTimestamp();
-    const zipName = inputPaths.length === 1
-      ? `${path.basename(inputPaths[0], path.extname(inputPaths[0]))}_validado_${ts}.zip`
+    const ts = makeTimestamp();
+    const zipName = normalizedInputPaths.length === 1
+      ? `${path.basename(normalizedInputPaths[0], path.extname(normalizedInputPaths[0]))}_validado_${ts}.zip`
       : `validados_${ts}.zip`;
     const zipOut = path.join(resolvedOutputDir, zipName);
     await createZip(zipOut, allZipFiles);
 
     return { ok: true, zipOut, total: globalTotal, valid: totalValid };
-
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }
@@ -1225,7 +1331,7 @@ ipcMain.handle('start-validation', async (_event, payload) => {
 //  IPC HANDLER — Validação manual (campo "Validação rápida")
 // ═══════════════════════════════════════════════════════════════
 
-ipcMain.handle('validate-phones-manual', async (_event, phones) => {
+handleIpc('validate-phones-manual', async (_event, phones) => {
   if (getConnectedClients().length === 0) {
     return { ok: false, error: 'Nenhuma conta WhatsApp conectada.' };
   }
