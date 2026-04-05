@@ -45,6 +45,10 @@ const accounts = new Map();
 let rrIndex       = 0; // índice do round-robin para distribuição das consultas
 let nextAccountId = 1;
 
+// ── Estatísticas por conta (sessão atual) ─────────────────────
+// Map<id, { total: number, history: number[] }> onde history são timestamps Unix
+const accountStats = new Map();
+
 // ── Semaphore para limitar concorrência ──────────────────────
 class Semaphore {
   constructor(max) { this.max = max; this.current = 0; this.queue = []; }
@@ -405,7 +409,17 @@ async function getNumberIdWithRetry(normalized, clientOverride = null, maxRetrie
     const client = preferredClient || getNextClient();
     if (!client) throw new Error('Nenhuma conta WhatsApp conectada.');
     try {
-      return await getNumberIdWithTimeout(client, normalized);
+      const result = await getNumberIdWithTimeout(client, normalized);
+      const accId = getAccountIdByClient(client);
+      if (!accId) console.warn('[getNumberIdWithRetry] getAccountIdByClient retornou null!');
+      if (accId) {
+        const s = accountStats.get(accId) ?? { total: 0, history: [] };
+        s.total++;
+        s.history.push(Date.now());
+        accountStats.set(accId, s);
+        await incrementAccountUsageDaily(accId, 1);
+      }
+      return result;
     } catch (err) {
       lastErr = err;
       const msg = err.message || String(err);
@@ -523,6 +537,7 @@ ipcMain.handle('connect-db', async (_event, config) => {
     await tryConnectDb(config);
     saveDbConfig(config);
     broadcastDbStatus({ connected: true });
+    await ensureDashboardTables();
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
@@ -595,6 +610,106 @@ async function savePhone(phone, hasWa, checkedAt) {
     );
   } catch (err) {
     console.warn('[savePhone] Erro ao persistir cache:', err.message);
+  }
+}
+
+async function ensureDashboardTables() {
+  if (!pool) return;
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS validation_runs (
+        id          SERIAL PRIMARY KEY,
+        files       TEXT NOT NULL,
+        total       INT NOT NULL DEFAULT 0,
+        valid       INT NOT NULL DEFAULT 0,
+        invalid     INT NOT NULL DEFAULT 0,
+        format_err  INT NOT NULL DEFAULT 0,
+        error_count INT NOT NULL DEFAULT 0,
+        duration_ms BIGINT NOT NULL DEFAULT 0,
+        created_at  TIMESTAMP NOT NULL
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS account_usage_daily (
+        account_id  TEXT NOT NULL,
+        day         DATE NOT NULL,
+        total       INT NOT NULL DEFAULT 0,
+        PRIMARY KEY (account_id, day)
+      )
+    `);
+  } catch (err) {
+    console.warn('[ensureDashboardTables] Erro ao criar tabelas:', err.message);
+  }
+}
+
+async function saveValidationRun({ files, total, valid, invalid, formatErr, errorCount, durationMs }) {
+  if (!pool) {
+    console.warn('[saveValidationRun] Pool é null - banco não conectado');
+    return;
+  }
+  try {
+    console.log('[saveValidationRun] Salvando: files=%s, total=%d, valid=%d, invalid=%d, formatErr=%d, errorCount=%d', files, total, valid, invalid, formatErr, errorCount);
+    const result = await pool.query(
+      `INSERT INTO validation_runs (files, total, valid, invalid, format_err, error_count, duration_ms, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [files, total, valid, invalid, formatErr, errorCount, durationMs, nowBRT()]
+    );
+    console.log('[saveValidationRun] ✓ Run salvo com sucesso');
+  } catch (err) {
+    console.error('[saveValidationRun] ✗ Erro ao salvar run:', err.message, err.code);
+  }
+}
+
+async function saveAccountUsageBatch(runAcctCounts) {
+  if (!pool) {
+    console.warn('[saveAccountUsageBatch] Pool é null - banco não conectado');
+    return;
+  }
+  if (!runAcctCounts.size) {
+    console.log('[saveAccountUsageBatch] Nenhuma conta com uso nesta rodada');
+    return;
+  }
+  try {
+    console.log('[saveAccountUsageBatch] Salvando uso de %d contas', runAcctCounts.size);
+    for (const [accountId, count] of runAcctCounts.entries()) {
+      console.log('[saveAccountUsageBatch]   Conta %s: %d lookups', accountId, count);
+      await pool.query(
+        `INSERT INTO account_usage_daily (account_id, day, total)
+         VALUES ($1, CURRENT_DATE, $2)
+         ON CONFLICT (account_id, day) DO UPDATE SET total = account_usage_daily.total + $2`,
+        [accountId, count]
+      );
+    }
+    console.log('[saveAccountUsageBatch] ✓ Uso de contas salvo com sucesso');
+  } catch (err) {
+    console.error('[saveAccountUsageBatch] ✗ Erro ao salvar uso de contas:', err.message, err.code);
+  }
+}
+
+async function incrementAccountUsageDaily(accountId, incrementBy = 1) {
+  if (!pool) return;
+  try {
+    await pool.query(
+      `INSERT INTO account_usage_daily (account_id, day, total)
+       VALUES ($1, CURRENT_DATE, $2)
+       ON CONFLICT (account_id, day) DO UPDATE SET total = account_usage_daily.total + $2`,
+      [accountId, incrementBy]
+    );
+  } catch (err) {
+    console.warn('[incrementAccountUsageDaily] Erro ao incrementar uso:', err.message);
+  }
+}
+
+async function updateValidationRunPartial(runId, partialData) {
+  if (!pool || !runId) return;
+  try {
+    const { totalProcessed, valid, invalid, formatErr, errorCount } = partialData;
+    await pool.query(
+      `UPDATE validation_runs SET total = $1, valid = $2, invalid = $3, format_err = $4, error_count = $5 WHERE id = $6`,
+      [totalProcessed, valid, invalid, formatErr, errorCount, runId]
+    );
+  } catch (err) {
+    console.warn('[updateValidationRunPartial] Erro:', err.message);
   }
 }
 
@@ -691,6 +806,12 @@ async function flushPendingRows(state, writers, columnMapping) {
     if (row.status === 'tem_whatsapp') {
       await writeChunk(writers.txtStream, buildTxtOutputLine(row.line, columnMapping) + '\n');
       state.validCount++;
+    } else if (row.status === 'sem_whatsapp' || row.status === 'sem_dados') {
+      state.invalidCount++;
+    } else if (row.status === 'formato_invalido') {
+      state.formatCount++;
+    } else if (row.status === 'erro') {
+      state.errorCount++;
     }
     state.processedCount++;
     state.nextWriteIndex++;
@@ -766,7 +887,7 @@ function createWindow() {
     const savedDbConfig = loadDbConfig();
     if (savedDbConfig) {
       tryConnectDb(savedDbConfig)
-        .then(() => broadcastDbStatus({ connected: true }))
+        .then(async () => { broadcastDbStatus({ connected: true }); await ensureDashboardTables(); })
         .catch(err => console.warn('[did-finish-load] Auto-conexão ao banco falhou (usuário reconecta manualmente):', err.message));
     }
   });
@@ -1012,12 +1133,14 @@ ipcMain.handle('get-cache-info', async () => {
 });
 
 // Pesquisa paginada no banco com filtros de número e status de WhatsApp
-handleIpc('search-cache', async (_event, query, filter, offset = 0, pageSize = 100) => {
+handleIpc('search-cache', async (_event, query, filter, offset = 0, pageSize = 100, dateFrom = null, dateTo = null) => {
   if (!pool) return { rows: [], total: 0, error: 'Banco não conectado.' };
   try {
     const q      = String(query || '').replace(/\D/g, '');
     const params = [];
     let where    = '1=1';
+    const from = typeof dateFrom === 'string' ? dateFrom.trim() : '';
+    const to   = typeof dateTo === 'string' ? dateTo.trim() : '';
 
     if (q) {
       params.push(`%${q}%`);
@@ -1025,6 +1148,13 @@ handleIpc('search-cache', async (_event, query, filter, offset = 0, pageSize = 1
     }
     if (filter === 'true')  where += ' AND has_wa = true';
     if (filter === 'false') where += ' AND has_wa = false';
+
+    if (from && to) {
+      params.push(from);
+      where += ` AND checked_at::date >= $${params.length}::date`;
+      params.push(to);
+      where += ` AND checked_at::date <= $${params.length}::date`;
+    }
 
     const countRes = await pool.query(
       `SELECT COUNT(*) AS total FROM phone_cache WHERE ${where}`,
@@ -1138,6 +1268,38 @@ handleIpc('start-validation', async (_event, payload) => {
     }
 
     cancelRequested = false;
+    const runStartedAt = Date.now();
+    
+    for (const [id, acc] of accounts.entries()) {
+      if (!accountStats.has(id)) {
+        accountStats.set(id, { total: 0, history: [] });
+      }
+    }
+    
+    console.log('[start-validation] Iniciando - accountStats.size=%d contas', accountStats.size);
+    for (const [id, s] of accountStats.entries()) {
+      console.log('[start-validation]   Conta %s: %d lookups antes da validacao', id, s.total);
+    }
+    let currentRunId = null;
+    if (pool) {
+      try {
+        const insertResult = await pool.query(
+          `INSERT INTO validation_runs (files, total, valid, invalid, format_err, error_count, duration_ms, created_at)
+           VALUES ($1, 0, 0, 0, 0, 0, 0, $2)
+           RETURNING id`,
+          [normalizedInputPaths.map(p => path.basename(p)).join(', '), nowBRT()]
+        );
+        if (insertResult.rows.length > 0) {
+          currentRunId = insertResult.rows[0].id;
+          console.log('[start-validation] Run criada com ID=%d', currentRunId);
+        }
+      } catch (err) {
+        console.warn('[start-validation] Erro ao criar run:', err.message);
+      }
+    }
+
+    let lastFlushTime = Date.now();
+    const FLUSH_INTERVAL_MS = 5000;
 
     if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
     let resolvedOutputDir = (payloadOutputDir && fs.existsSync(payloadOutputDir) && isSafeFilePath(payloadOutputDir))
@@ -1151,6 +1313,9 @@ handleIpc('start-validation', async (_event, payload) => {
     let currentFileValidCount = 0;
     let processedInBatch = 0;
     let totalValid = 0;
+    let totalInvalid = 0;
+    let totalFormat  = 0;
+    let totalError   = 0;
 
     if (resumeFrom && resumeState && JSON.stringify(resumeState.inputPaths) === JSON.stringify(normalizedInputPaths)) {
       startFileIndex = resumeState.fileIndex;
@@ -1198,10 +1363,15 @@ handleIpc('start-validation', async (_event, payload) => {
       const lineIterator = streamNonEmptyLines(inputPath, lineStart)[Symbol.asyncIterator]();
       let processedRealCount = fileIdx === startFileIndex ? processedInBatch : 0;
       let batchPausePromise = null;
+      // Delay global compartilhado entre todos os workers para garantir o intervalo configurado
+      let nextSlotAt = 0;
       const writeState = {
         nextWriteIndex: lineStart,
         processedCount: lineStart,
-        validCount: fileIdx === startFileIndex ? currentFileValidCount : 0,
+        validCount:   fileIdx === startFileIndex ? currentFileValidCount : 0,
+        invalidCount: 0,
+        formatCount:  0,
+        errorCount:   0,
         pendingRows: new Map()
       };
 
@@ -1271,6 +1441,18 @@ handleIpc('start-validation', async (_event, payload) => {
             await flushPendingRows(writeState, writers, columnMapping);
             globalCurrent++;
 
+            const now = Date.now();
+            if (currentRunId && now - lastFlushTime >= FLUSH_INTERVAL_MS) {
+              lastFlushTime = now;
+              await updateValidationRunPartial(currentRunId, {
+                totalProcessed: globalCurrent,
+                valid: totalValid + writeState.validCount,
+                invalid: totalInvalid + writeState.invalidCount,
+                formatErr: totalFormat + writeState.formatCount,
+                errorCount: totalError + writeState.errorCount
+              });
+            }
+
             mainWindow?.webContents.send('validation-progress', {
               current: globalCurrent,
               total: globalTotal,
@@ -1287,9 +1469,18 @@ handleIpc('start-validation', async (_event, payload) => {
               if (processedRealCount >= Number(batchSize) && !batchPausePromise) {
                 broadcastWaStatus({ type: 'pause', message: `Pausa de lote por ${batchPauseMs}ms.` });
                 processedRealCount = 0;
-                batchPausePromise = sleep(Number(batchPauseMs)).then(() => { batchPausePromise = null; });
+                batchPausePromise = sleep(Number(batchPauseMs)).then(() => {
+                  nextSlotAt = 0;
+                  batchPausePromise = null;
+                });
               } else if (!batchPausePromise) {
-                await sleep(randBetween(minDelayMs, maxDelayMs));
+                // Reserva o próximo slot de tempo de forma atômica para todos os workers
+                const now = Date.now();
+                const delay = randBetween(minDelayMs, maxDelayMs);
+                const waitStart = Math.max(now, nextSlotAt);
+                nextSlotAt = waitStart + delay;
+                const waitMs = waitStart - now + delay;
+                if (waitMs > 0) await sleep(waitMs);
               }
             }
           }
@@ -1339,7 +1530,10 @@ handleIpc('start-validation', async (_event, payload) => {
         };
       }
 
-      totalValid += writeState.validCount;
+      totalValid   += writeState.validCount;
+      totalInvalid += writeState.invalidCount;
+      totalFormat  += writeState.formatCount;
+      totalError   += writeState.errorCount;
       allZipFiles.push({ name: `${exportBase}.txt`, sourcePath: writers.txtPath });
       allZipFiles.push({ name: `${exportBase}.csv`, sourcePath: writers.csvPath });
       currentFileOutput = null;
@@ -1354,6 +1548,19 @@ handleIpc('start-validation', async (_event, payload) => {
       : `validados_${ts}.zip`;
     const zipOut = path.join(resolvedOutputDir, zipName);
     await createZip(zipOut, allZipFiles);
+
+    console.log('[start-validation] Finalizando - totalValid=%d, totalInvalid=%d, totalFormat=%d, totalError=%d', totalValid, totalInvalid, totalFormat, totalError);
+    
+    if (currentRunId) {
+      await updateValidationRunPartial(currentRunId, {
+        totalProcessed: globalCurrent,
+        valid: totalValid,
+        invalid: totalInvalid,
+        formatErr: totalFormat,
+        errorCount: totalError
+      });
+      console.log('[start-validation] Run finalizada com sucesso');
+    }
 
     return { ok: true, zipOut, total: globalTotal, valid: totalValid };
   } catch (err) {
@@ -1405,6 +1612,79 @@ ipcMain.on('win-maximize', (e) => {
 });
 ipcMain.on('win-close', (e) => BrowserWindow.fromWebContents(e.sender)?.close());
 ipcMain.handle('get-app-version', () => app.getVersion());
+
+// Retorna estatísticas persistentes de runs, por conta e por dia
+ipcMain.handle('get-dashboard-stats', async (_event, dateFrom, dateTo) => {
+  const result = { ok: true, runs: [], totals: null, accountStats: [], dailyStats: [] };
+  if (!pool) return result;
+  try {
+    const whereClause = dateFrom && dateTo
+      ? `WHERE created_at >= $1 AND created_at < ($2::date + INTERVAL '1 day')`
+      : '';
+    const params = dateFrom && dateTo ? [dateFrom, dateTo] : [];
+    let paramIndex = params.length;
+
+    const { rows: runs } = await pool.query(
+      `SELECT files, total, valid, invalid, format_err, error_count, duration_ms,
+              TO_CHAR(created_at, 'DD/MM/YYYY HH24:MI') AS created_at
+       FROM validation_runs ${whereClause} ORDER BY created_at DESC LIMIT 50`,
+      params
+    );
+    result.runs = runs;
+
+    const { rows: [totals] } = await pool.query(
+      `SELECT COUNT(*)::int AS total,
+              COALESCE(SUM(CASE WHEN has_wa THEN 1 ELSE 0 END), 0)::int AS valid,
+              COALESCE(SUM(CASE WHEN NOT has_wa THEN 1 ELSE 0 END), 0)::int AS invalid,
+              0::int AS error_count
+       FROM phone_cache
+       ${dateFrom && dateTo ? `WHERE DATE(checked_at) >= $1 AND DATE(checked_at) <= $2` : ''}`,
+      params
+    );
+    result.totals = totals;
+
+    const acctWhereClause = dateFrom && dateTo
+      ? `WHERE day >= $1 AND day <= $2`
+      : `WHERE day >= CURRENT_DATE - INTERVAL '30 days'`;
+    const acctParams = dateFrom && dateTo ? [dateFrom, dateTo] : [];
+
+    const { rows: accts } = await pool.query(
+      `SELECT account_id,
+              SUM(total)::int AS total,
+              SUM(CASE WHEN day = CURRENT_DATE THEN total ELSE 0 END)::int AS today
+       FROM account_usage_daily
+       ${acctWhereClause}
+       GROUP BY account_id ORDER BY total DESC`,
+      acctParams
+    );
+    result.accountStats = accts.map(a => ({
+      ...a,
+      name: accounts.get(a.account_id)?.info?.pushname ||
+            accounts.get(a.account_id)?.info?.wid?.user ||
+            a.account_id
+    }));
+
+    const dailyWhereClause = dateFrom && dateTo
+      ? `WHERE DATE(checked_at) >= $1 AND DATE(checked_at) <= $2`
+      : '';
+    const dailyParams = dateFrom && dateTo ? [dateFrom, dateTo] : [];
+
+    const { rows: dailyStats } = await pool.query(
+      `SELECT DATE(checked_at)::text AS day,
+              COUNT(*)::int AS total,
+              SUM(CASE WHEN has_wa     THEN 1 ELSE 0 END)::int AS valid,
+              SUM(CASE WHEN NOT has_wa THEN 1 ELSE 0 END)::int AS invalid
+       FROM phone_cache
+       ${dailyWhereClause}
+       GROUP BY 1 ORDER BY 1 DESC LIMIT 30`,
+      dailyParams
+    );
+    result.dailyStats = dailyStats;
+  } catch (err) {
+    console.warn('[get-dashboard-stats] Erro:', err.message);
+  }
+  return result;
+});
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);

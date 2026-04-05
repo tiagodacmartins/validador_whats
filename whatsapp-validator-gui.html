@@ -526,6 +526,7 @@
       <button class="tab active" data-tab="validador">&#9654; Validador</button>
       <button class="tab" data-tab="banco" id="tabBtnBanco">&#128222; Banco de Telefones</button>
       <button class="tab" data-tab="whatsapp" id="tabBtnWa">&#128247; WhatsApp</button>
+      <button class="tab" data-tab="dashboard" id="tabBtnDash">&#128202; Dashboard</button>
     </div>
 
     <div id="tab-validador" class="tab-panel active">
@@ -738,7 +739,13 @@
             <option value="true">Com WhatsApp</option>
             <option value="false">Sem WhatsApp</option>
           </select>
+          <label for="cacheDateFrom" style="margin:0;font-size:11px;">De:</label>
+          <input id="cacheDateFrom" type="date" style="width:140px;" />
+          <label for="cacheDateTo" style="margin:0;font-size:11px;">Até:</label>
+          <input id="cacheDateTo" type="date" style="width:140px;" />
           <button id="btnCacheSearch" class="btn btn-primary">Buscar</button>
+          <button id="btnCacheDateClear" class="btn btn-secondary">Limpar Data</button>
+          <button id="btnCacheExport" class="btn btn-secondary">Exportar CSV</button>
           <span id="bancoTotal" style="font-size:13px;color:var(--muted);align-self:center;"></span>
         </div>
         <div class="muted" id="cacheCount"></div>
@@ -779,6 +786,76 @@
         <div id="accountList" style="display:flex;flex-direction:column;gap:10px;"></div>
       </div>
     </div><!-- #tab-whatsapp -->
+
+    <!-- ====== DASHBOARD TAB ====== -->
+    <div id="tab-dashboard" class="tab-panel" style="overflow-y:auto;">
+      <!-- Filtro de data + atualizar (TOPO) -->
+      <div class="card" style="margin-bottom:6px;padding:8px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+        <div style="display:flex;gap:8px;align-items:center;">
+          <label for="dashFilterDateFrom" style="margin:0;">De:</label>
+          <input type="date" id="dashFilterDateFrom" style="width:140px;">
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <label for="dashFilterDateTo" style="margin:0;">Até:</label>
+          <input type="date" id="dashFilterDateTo" style="width:140px;">
+        </div>
+        <button class="btn btn-secondary" id="btnApplyDashFilter" style="padding:3px 12px;font-size:11px;">Aplicar Filtro</button>
+        <button class="btn btn-secondary" id="btnClearDashFilter" style="padding:3px 12px;font-size:11px;">Limpar</button>
+        <button class="btn btn-secondary" id="btnRefreshDash" style="padding:3px 12px;font-size:11px;margin-left:auto;">&#8635; Atualizar</button>
+        <button class="btn" id="btnExportDash" style="padding:3px 12px;font-size:11px;">&#128190; Exportar CSV</button>
+      </div>
+
+      <!-- Tiles de resumo da sessão -->
+      <div class="stats" id="dashTiles" style="margin-bottom:6px;">
+        <div class="stat"><label>Total no banco</label><strong id="dsTotalProc">—</strong></div>
+        <div class="stat"><label>Com WhatsApp</label><strong id="dsValidPct" style="color:#006600;">—</strong></div>
+        <div class="stat"><label>Sem WhatsApp</label><strong id="dsInvalidPct" style="color:#800000;">—</strong></div>
+        <div class="stat"><label>Erros</label><strong id="dsErrorPct" style="color:#808000;">—</strong></div>
+      </div>
+
+      <!-- Histórico de runs + por conta -->
+      <div style="display:flex;gap:6px;margin-bottom:6px;align-items:flex-start;">
+        <div class="card" style="flex:3;overflow:hidden;min-width:0;">
+          <h2>Histórico de Validações</h2>
+          <div class="table-wrap">
+            <table>
+              <thead><tr>
+                <th>Arquivo(s)</th><th>Total</th><th>Válidos</th><th>Inválidos</th>
+                <th>Erros</th><th>Taxa</th><th>Duração</th><th>Médio/linha</th><th>Data</th>
+              </tr></thead>
+              <tbody id="dashRunTbody"><tr><td colspan="8" style="color:#808080;text-align:center;">Nenhuma validação concluída nesta sessão.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card" style="flex:1;overflow:hidden;min-width:0;">
+          <h2>Por Conta</h2>
+          <div class="table-wrap">
+            <table>
+              <thead><tr>
+                <th>Conta</th><th>Total (30d)</th><th>Hoje</th>
+              </tr></thead>
+              <tbody id="dashAcctTbody"><tr><td colspan="4" style="color:#808080;text-align:center;">Sem dados.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Por dia (banco) -->
+      <div class="card" style="overflow:hidden;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+          <h2 style="margin:0;">Por Dia (banco de dados)</h2>
+        </div>
+        <div id="dashDailyNote" class="help" style="display:none;"></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Data</th><th>Consultados</th><th>Com WhatsApp</th><th>Sem WhatsApp</th><th>Taxa %</th>
+            </tr></thead>
+            <tbody id="dashDailyTbody"><tr><td colspan="5" style="color:#808080;text-align:center;">Aguardando…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div><!-- #tab-dashboard -->
 
   </div><!-- .app-inner -->
   </div><!-- .app -->
@@ -1019,6 +1096,7 @@
     // ═══════════════════════════════════════════════════════════
 
     let paused = false; // true quando o usuário clicou em "Pausar" (aguardando resposta do main)
+
 
     /**
      * Alterna a interface entre modo "em validação" e modo "ocioso".
@@ -1420,10 +1498,210 @@
     function switchTab(name) {
       document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
       document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + name));
-      if (name === 'banco') bancoRunSearch();
-      if (name === 'whatsapp') waTabLoad();
+      if (name === 'banco')     bancoRunSearch();
+      if (name === 'whatsapp')  waTabLoad();
+      if (name === 'dashboard') dashboardLoad();
     }
     document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
+
+    // ═══════════════════════════════════════════════════════════
+    //  ABA DASHBOARD
+    // ═══════════════════════════════════════════════════════════
+
+    function fmtMs(ms) {
+      if (!ms || ms < 0) return '—';
+      const s = Math.floor(ms / 1000);
+      if (s < 60) return s + 's';
+      const m = Math.floor(s / 60);
+      return `${m}m ${s % 60}s`;
+    }
+    function pct(n, total) {
+      return total ? (n / total * 100).toFixed(1) + '%' : '—';
+    }
+    function fmtQtyPct(n, total) {
+      const qty = Number(n).toLocaleString('pt-BR');
+      const percentage = pct(n, total);
+      return `${qty} (${percentage})`;
+    }
+
+    let dashFilterDateFrom = null;
+    let dashFilterDateTo = null;
+    let dashLastStats = null;
+
+    async function dashboardLoad() {
+      const stats = await window.waApp.getDashboardStats(dashFilterDateFrom, dashFilterDateTo);
+      dashLastStats = stats;
+
+      // ── Tiles de resumo (estoque atual do banco) ──────────────────────────────
+      const t = stats.totals;
+      if (t) {
+        document.getElementById('dsTotalProc').textContent  = Number(t.total).toLocaleString('pt-BR');
+        document.getElementById('dsValidPct').textContent   = fmtQtyPct(t.valid,       t.total);
+        document.getElementById('dsInvalidPct').textContent = fmtQtyPct(t.invalid,     t.total);
+        document.getElementById('dsErrorPct').textContent   = fmtQtyPct(t.error_count, t.total);
+      } else {
+        ['dsTotalProc','dsValidPct','dsInvalidPct','dsErrorPct'].forEach(id => {
+          document.getElementById(id).textContent = 'Banco não conectado';
+        });
+      }
+
+      // ── Histórico de runs ─────────────────────────────────────────────────────
+      const runTbody = document.getElementById('dashRunTbody');
+      if (!stats.runs.length) {
+        runTbody.innerHTML = '<tr><td colspan="9" style="color:#808080;text-align:center;">Nenhuma validação registrada no banco ainda.</td></tr>';
+      } else {
+        runTbody.innerHTML = '';
+        for (const r of stats.runs) {
+          const avgMs = r.total > 0 ? Math.round(r.duration_ms / r.total) : null;
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(r.files)}">${escapeHtml(r.files)}</td>
+            <td>${Number(r.total).toLocaleString('pt-BR')}</td>
+            <td style="color:#006600;font-weight:bold;">${Number(r.valid).toLocaleString('pt-BR')}</td>
+            <td style="color:#800000;">${Number(r.invalid).toLocaleString('pt-BR')}</td>
+            <td style="color:#808000;">${Number(r.error_count).toLocaleString('pt-BR')}</td>
+            <td>${pct(r.valid, r.total)}</td>
+            <td>${fmtMs(r.duration_ms)}</td>
+            <td>${avgMs != null ? fmtMs(avgMs) : '—'}</td>
+            <td style="color:var(--muted);font-size:10px;">${escapeHtml(r.created_at || '')}</td>
+          `;
+          runTbody.appendChild(tr);
+        }
+      }
+
+      // ── Por conta ─────────────────────────────────────────────────────────────
+      const acctTbody = document.getElementById('dashAcctTbody');
+      if (!stats.accountStats.length) {
+        acctTbody.innerHTML = '<tr><td colspan="3" style="color:#808080;text-align:center;">Sem dados.</td></tr>';
+      } else {
+        acctTbody.innerHTML = '';
+        for (const a of stats.accountStats) {
+          const tr = document.createElement('tr');
+          const label = a.name !== a.account_id
+            ? `${escapeHtml(a.name)}<br><span style="font-size:10px;color:#808080;">${escapeHtml(a.account_id)}</span>`
+            : escapeHtml(a.account_id);
+          tr.innerHTML = `<td>${label}</td><td>${Number(a.total).toLocaleString('pt-BR')}</td><td>${Number(a.today).toLocaleString('pt-BR')}</td>`;
+          acctTbody.appendChild(tr);
+        }
+      }
+
+      // ── Por dia (banco phone_cache) ───────────────────────────────────────────
+      const dailyTbody = document.getElementById('dashDailyTbody');
+      const dailyNote  = document.getElementById('dashDailyNote');
+      if (!stats.dailyStats.length) {
+        dailyNote.textContent = stats.ok
+          ? 'Banco conectado, mas sem registros ainda.'
+          : 'Banco de dados não conectado. Conecte na aba Banco de Telefones para ver estatísticas por dia.';
+        dailyNote.style.display = '';
+        dailyTbody.innerHTML = '<tr><td colspan="5" style="color:#808080;text-align:center;">—</td></tr>';
+      } else {
+        dailyNote.style.display = 'none';
+        dailyTbody.innerHTML = '';
+        for (const d of stats.dailyStats) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${escapeHtml(d.day)}</td>
+            <td>${Number(d.total).toLocaleString('pt-BR')}</td>
+            <td style="color:#006600;">${Number(d.valid).toLocaleString('pt-BR')}</td>
+            <td style="color:#800000;">${Number(d.invalid).toLocaleString('pt-BR')}</td>
+            <td>${pct(d.valid, d.total)}</td>
+          `;
+          dailyTbody.appendChild(tr);
+        }
+      }
+    }
+
+    document.getElementById('btnRefreshDash').addEventListener('click', dashboardLoad);
+
+    document.getElementById('btnExportDash').addEventListener('click', () => {
+      if (!dashLastStats) { alert('Carregue o dashboard antes de exportar.'); return; }
+
+      const csvCell = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+      const row = (...cols) => cols.map(csvCell).join(',');
+      const lines = [];
+
+      const filterLabel = dashFilterDateFrom && dashFilterDateTo
+        ? `De ${dashFilterDateFrom} ate ${dashFilterDateTo}`
+        : 'Sem filtro de data';
+
+      // ── Seção 1: Resumo geral ──────────────────────────────────────────────
+      lines.push(row('RESUMO GERAL'), row('Filtro', filterLabel));
+      lines.push(row('Total no Banco', 'Com WhatsApp', '% Com WA', 'Sem WhatsApp', '% Sem WA'));
+      const t = dashLastStats.totals;
+      if (t) {
+        const pctWa  = t.total ? (t.valid   / t.total * 100).toFixed(1) + '%' : '-';
+        const pctSem = t.total ? (t.invalid / t.total * 100).toFixed(1) + '%' : '-';
+        lines.push(row(t.total, t.valid, pctWa, t.invalid, pctSem));
+      } else {
+        lines.push(row('Banco nao conectado'));
+      }
+      lines.push(row(''));
+
+      // ── Seção 2: Histórico de validações ──────────────────────────────────
+      lines.push(row('HISTORICO DE VALIDACOES'));
+      lines.push(row('Arquivo(s)', 'Total', 'Validos', 'Invalidos', 'Erros', 'Taxa %', 'Duracao (ms)', 'Media por linha (ms)', 'Data'));
+      for (const r of dashLastStats.runs) {
+        const taxaPct = r.total ? (r.valid / r.total * 100).toFixed(1) + '%' : '-';
+        const avgMs   = r.total > 0 ? Math.round(r.duration_ms / r.total) : '-';
+        lines.push(row(r.files, r.total, r.valid, r.invalid, r.error_count, taxaPct, r.duration_ms, avgMs, r.created_at));
+      }
+      if (!dashLastStats.runs.length) lines.push(row('Sem registros no periodo'));
+      lines.push(row(''));
+
+      // ── Seção 3: Por conta ────────────────────────────────────────────────
+      lines.push(row('POR CONTA'));
+      lines.push(row('Conta', 'Nome', 'Total no Periodo', 'Hoje'));
+      for (const a of dashLastStats.accountStats) {
+        lines.push(row(a.account_id, a.name !== a.account_id ? a.name : '', a.total, a.today));
+      }
+      if (!dashLastStats.accountStats.length) lines.push(row('Sem registros no periodo'));
+      lines.push(row(''));
+
+      // ── Seção 4: Por dia ──────────────────────────────────────────────────
+      lines.push(row('POR DIA (banco de dados)'));
+      lines.push(row('Data', 'Consultados', 'Com WhatsApp', 'Sem WhatsApp', 'Taxa %'));
+      for (const d of dashLastStats.dailyStats) {
+        const taxaPct = d.total ? (d.valid / d.total * 100).toFixed(1) + '%' : '-';
+        lines.push(row(d.day, d.total, d.valid, d.invalid, taxaPct));
+      }
+      if (!dashLastStats.dailyStats.length) lines.push(row('Sem registros no periodo'));
+
+      const bom = '\uFEFF'; // BOM para Excel reconhecer UTF-8
+      const csv = bom + lines.join('\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      const ts   = new Date().toISOString().slice(0, 10);
+      const filtroStr = dashFilterDateFrom ? `_${dashFilterDateFrom}_${dashFilterDateTo}` : '';
+      a.href     = url;
+      a.download = `dashboard${filtroStr}_${ts}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    document.getElementById('btnApplyDashFilter').addEventListener('click', () => {
+      const from = document.getElementById('dashFilterDateFrom').value;
+      const to = document.getElementById('dashFilterDateTo').value;
+      if (!from || !to) {
+        alert('Selecione data inicial e final');
+        return;
+      }
+      if (from > to) {
+        alert('Data inicial não pode ser posterior à data final');
+        return;
+      }
+      dashFilterDateFrom = from;
+      dashFilterDateTo = to;
+      dashboardLoad();
+    });
+    document.getElementById('btnClearDashFilter').addEventListener('click', () => {
+      dashFilterDateFrom = null;
+      dashFilterDateTo = null;
+      document.getElementById('dashFilterDateFrom').value = '';
+      document.getElementById('dashFilterDateTo').value = '';
+      dashboardLoad();
+    });
+
 
     // ═══════════════════════════════════════════════════════════
     //  ABA BANCO DE TELEFONES
@@ -1434,10 +1712,12 @@
     let bancoTotal = 0;
     let bancoQuery = '';
     let bancoFilter = 'all';
+    let bancoDateFrom = null;
+    let bancoDateTo = null;
 
     async function bancoFetchAndRender() {
       const offset = (bancoPage - 1) * BANCO_PAGE_SIZE;
-      const result = await window.waApp.searchCache(bancoQuery, bancoFilter, offset, BANCO_PAGE_SIZE);
+      const result = await window.waApp.searchCache(bancoQuery, bancoFilter, offset, BANCO_PAGE_SIZE, bancoDateFrom, bancoDateTo);
       bancoTotal = result.total;
       const cacheBody = document.getElementById('cacheBody');
       cacheBody.innerHTML = '';
@@ -1497,11 +1777,109 @@
     async function bancoRunSearch() {
       bancoQuery = document.getElementById('cacheSearch').value;
       bancoFilter = document.getElementById('cacheFilter').value;
+      const from = document.getElementById('cacheDateFrom').value;
+      const to = document.getElementById('cacheDateTo').value;
+      if ((from && !to) || (!from && to)) {
+        alert('Para filtrar por data, preencha as duas datas (De e Até).');
+        return;
+      }
+      if (from && to && from > to) {
+        alert('Data inicial não pode ser posterior à data final.');
+        return;
+      }
+      bancoDateFrom = from || null;
+      bancoDateTo = to || null;
       bancoPage = 1;
       await bancoFetchAndRender();
     }
 
+    async function bancoExportCsv() {
+      const btn = document.getElementById('btnCacheExport');
+      const previousText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Exportando...';
+
+      try {
+        const query = document.getElementById('cacheSearch').value;
+        const filter = document.getElementById('cacheFilter').value;
+        const pageSize = 1000;
+        let offset = 0;
+        let total = 0;
+        const allRows = [];
+
+        while (true) {
+          const result = await window.waApp.searchCache(query, filter, offset, pageSize, bancoDateFrom, bancoDateTo);
+          if (result.error) {
+            alert(`Erro ao exportar: ${result.error}`);
+            return;
+          }
+          if (!Array.isArray(result.rows)) break;
+
+          if (offset === 0) total = Number(result.total || 0);
+          allRows.push(...result.rows);
+          offset += result.rows.length;
+
+          if (!result.rows.length || offset >= total) break;
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+
+        if (!allRows.length) {
+          alert('Nenhum registro encontrado para exportar com os filtros atuais.');
+          return;
+        }
+
+        const csvCell = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+        const row = (...cols) => cols.map(csvCell).join(',');
+        const lines = [];
+
+        const filterLabel = filter === 'true' ? 'Com WhatsApp' : (filter === 'false' ? 'Sem WhatsApp' : 'Todos');
+        const dateLabel = bancoDateFrom && bancoDateTo
+          ? `${bancoDateFrom} ate ${bancoDateTo}`
+          : 'Sem filtro de data';
+        lines.push(row('EXPORTACAO BANCO DE TELEFONES'));
+        lines.push(row('Busca', query || '(vazio)'));
+        lines.push(row('Filtro', filterLabel));
+        lines.push(row('Periodo de consulta', dateLabel));
+        lines.push(row('Total de registros', allRows.length));
+        lines.push(row('Gerado em', new Date().toLocaleString('pt-BR')));
+        lines.push(row(''));
+        lines.push(row('Telefone', 'Status', 'Data da consulta'));
+
+        for (const item of allRows) {
+          lines.push(row(
+            item.phone,
+            item.hasWa ? 'Com WhatsApp' : 'Sem WhatsApp',
+            item.checkedAt || ''
+          ));
+        }
+
+        const bom = '\uFEFF';
+        const csv = bom + lines.join('\n');
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+        const dateSuffix = bancoDateFrom && bancoDateTo ? `_${bancoDateFrom}_${bancoDateTo}` : '';
+        a.href = url;
+        a.download = `banco_telefones_${filterLabel.replace(/\s+/g, '_').toLowerCase()}${dateSuffix}_${ts}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = previousText;
+      }
+    }
+
     document.getElementById('btnCacheSearch').addEventListener('click', bancoRunSearch);
+    document.getElementById('btnCacheDateClear').addEventListener('click', async () => {
+      document.getElementById('cacheDateFrom').value = '';
+      document.getElementById('cacheDateTo').value = '';
+      bancoDateFrom = null;
+      bancoDateTo = null;
+      bancoPage = 1;
+      await bancoFetchAndRender();
+    });
+    document.getElementById('btnCacheExport').addEventListener('click', bancoExportCsv);
     document.getElementById('cacheSearch').addEventListener('keydown', e => { if (e.key === 'Enter') bancoRunSearch(); });
     document.getElementById('btnPageJump').addEventListener('click', () => {
       const v = parseInt(document.getElementById('pageJump').value, 10);

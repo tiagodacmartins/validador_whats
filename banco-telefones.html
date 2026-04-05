@@ -121,7 +121,8 @@
       border-right-color: #ffffff; border-bottom-color: #ffffff;
     }
     .titlebar-btn-close:hover { background: #aa0000; color: #ffffff; }
-  
+  </style>
+</head>
 <body>
   <div class="app">
     <div class="titlebar">
@@ -191,7 +192,12 @@
           <option value="true">Com WhatsApp</option>
           <option value="false">Sem WhatsApp</option>
         </select>
+        <label for="cacheDateFrom" style="margin:0;font-size:13px;">De:</label>
+        <input id="cacheDateFrom" type="date" style="width:140px;" />
+        <label for="cacheDateTo" style="margin:0;font-size:13px;">Até:</label>
+        <input id="cacheDateTo" type="date" style="width:140px;" />
         <button id="btnCacheSearch" class="btn btn-primary">Buscar</button>
+        <button id="btnCacheDateClear" class="btn btn-secondary">Limpar Data</button>
       </div>
       <div class="muted" id="cacheCount"></div>
       <div class="table-wrap">
@@ -227,6 +233,8 @@
     let currentTotal = 0;
     let currentQuery = '';
     let currentFilter = 'all';
+    let currentDateFrom = null;
+    let currentDateTo = null;
 
     // ── Estado da conexão com o banco ──────────────────────────
     function setDbConnected(connected) {
@@ -348,7 +356,7 @@
 
     async function fetchAndRender() {
       const offset = (currentPage - 1) * PAGE_SIZE;
-      const result = await window.banco.searchCache(currentQuery, currentFilter, offset, PAGE_SIZE);
+      const result = await window.banco.searchCache(currentQuery, currentFilter, offset, PAGE_SIZE, currentDateFrom, currentDateTo);
       currentTotal = result.total;
       const cacheBody = document.getElementById('cacheBody');
       cacheBody.innerHTML = '';
@@ -386,11 +394,31 @@
     async function runSearch() {
       currentQuery = document.getElementById('cacheSearch').value;
       currentFilter = document.getElementById('cacheFilter').value;
+      const from = document.getElementById('cacheDateFrom').value;
+      const to = document.getElementById('cacheDateTo').value;
+      if ((from && !to) || (!from && to)) {
+        alert('Para filtrar por data, preencha as duas datas (De e Até).');
+        return;
+      }
+      if (from && to && from > to) {
+        alert('Data inicial não pode ser posterior à data final.');
+        return;
+      }
+      currentDateFrom = from || null;
+      currentDateTo = to || null;
       currentPage = 1;
       await fetchAndRender();
     }
 
     document.getElementById('btnCacheSearch').addEventListener('click', runSearch);
+    document.getElementById('btnCacheDateClear').addEventListener('click', async () => {
+      document.getElementById('cacheDateFrom').value = '';
+      document.getElementById('cacheDateTo').value = '';
+      currentDateFrom = null;
+      currentDateTo = null;
+      currentPage = 1;
+      await fetchAndRender();
+    });
     document.getElementById('pageJump').addEventListener('keydown', e => {
       if (e.key === 'Enter') document.getElementById('btnPageJump').click();
     });

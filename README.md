@@ -100,7 +100,9 @@ CREATE TABLE phone_cache (
 
 ## Múltiplas contas
 
-Na aba **WhatsApp**, clique em **Adicionar conta** para incluir mais contas. Cada conta conectada processa um número simultaneamente — quanto mais contas, maior o throughput e menor o risco de bloqueio por conta individual.
+Na aba **WhatsApp**, clique em **Adicionar conta** para incluir mais contas. As consultas são distribuídas dinamicamente em round-robin entre as contas prontas.
+
+Se uma conta cair, desconectar ou ficar indisponível durante a validação, o processamento é redistribuído automaticamente para as contas que continuam conectadas. O app também registra aviso no badge/status e no painel de log.
 
 ---
 
@@ -140,7 +142,7 @@ O app usa **3 processos Electron**:
 **Fluxo de dados:**
 1. Renderer clica botão → `ipcRenderer.invoke('start-validation', config)`
 2. Main processa validação em loop paralelo com leitura via streaming
-3. Main envia `webContents.send('progress', {...})` a cada linha processada
+3. Main envia `webContents.send('validation-progress', {...})` a cada linha processada
 4. Main grava `.txt` e `.csv` incrementalmente em disco
 5. Renderer atualiza tabela + contadores em tempo real
 
@@ -227,6 +229,12 @@ Todo texto inserido via `.innerHTML` passa por `escapeHtml()` para evitar XSS.
 2. Pause a validação (botão "|| Pausar")
 3. Tente retomar — se continuar preso, reinicie o app
 4. Se repetir, tente com **menos contas** ou **mais delay** entre consultas
+
+### "Conta caiu/banida durante a validação"
+
+1. O processamento não é perdido: a validação é redistribuída para as contas que seguem prontas
+2. Confira no log mensagens de aviso sobre troca automática de conta
+3. Reconecte a conta afetada na aba **WhatsApp** para voltar ao pool
 
 ### "Out of memory / Arquivo muito grande"
 

@@ -38,8 +38,8 @@ contextBridge.exposeInMainWorld('banco', {
    * @param {number} offset    Offset para paginação.
    * @param {number} pageSize  Registros por página.
    */
-  searchCache: (query, filter, offset, pageSize) =>
-    ipcRenderer.invoke('search-cache', query, filter, offset, pageSize),
+  searchCache: (query, filter, offset, pageSize, dateFrom = null, dateTo = null) =>
+    ipcRenderer.invoke('search-cache', query, filter, offset, pageSize, dateFrom, dateTo),
 
   /**
    * Reconsulta um número no WhatsApp e atualiza o registro no banco.
