@@ -411,11 +411,13 @@ async function getNumberIdWithRetry(normalized, clientOverride = null, maxRetrie
     try {
       const result = await getNumberIdWithTimeout(client, normalized);
       const accId = getAccountIdByClient(client);
+      if (!accId) console.warn('[getNumberIdWithRetry] getAccountIdByClient retornou null!');
       if (accId) {
         const s = accountStats.get(accId) ?? { total: 0, history: [] };
         s.total++;
         s.history.push(Date.now());
         accountStats.set(accId, s);
+        await incrementAccountUsageDaily(accId, 1);
       }
       return result;
     } catch (err) {
@@ -641,22 +643,36 @@ async function ensureDashboardTables() {
 }
 
 async function saveValidationRun({ files, total, valid, invalid, formatErr, errorCount, durationMs }) {
-  if (!pool) return;
+  if (!pool) {
+    console.warn('[saveValidationRun] Pool é null - banco não conectado');
+    return;
+  }
   try {
-    await pool.query(
+    console.log('[saveValidationRun] Salvando: files=%s, total=%d, valid=%d, invalid=%d, formatErr=%d, errorCount=%d', files, total, valid, invalid, formatErr, errorCount);
+    const result = await pool.query(
       `INSERT INTO validation_runs (files, total, valid, invalid, format_err, error_count, duration_ms, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
       [files, total, valid, invalid, formatErr, errorCount, durationMs, nowBRT()]
     );
+    console.log('[saveValidationRun] ✓ Run salvo com sucesso');
   } catch (err) {
-    console.warn('[saveValidationRun] Erro ao salvar run:', err.message);
+    console.error('[saveValidationRun] ✗ Erro ao salvar run:', err.message, err.code);
   }
 }
 
 async function saveAccountUsageBatch(runAcctCounts) {
-  if (!pool || !runAcctCounts.size) return;
+  if (!pool) {
+    console.warn('[saveAccountUsageBatch] Pool é null - banco não conectado');
+    return;
+  }
+  if (!runAcctCounts.size) {
+    console.log('[saveAccountUsageBatch] Nenhuma conta com uso nesta rodada');
+    return;
+  }
   try {
+    console.log('[saveAccountUsageBatch] Salvando uso de %d contas', runAcctCounts.size);
     for (const [accountId, count] of runAcctCounts.entries()) {
+      console.log('[saveAccountUsageBatch]   Conta %s: %d lookups', accountId, count);
       await pool.query(
         `INSERT INTO account_usage_daily (account_id, day, total)
          VALUES ($1, CURRENT_DATE, $2)
@@ -664,8 +680,36 @@ async function saveAccountUsageBatch(runAcctCounts) {
         [accountId, count]
       );
     }
+    console.log('[saveAccountUsageBatch] ✓ Uso de contas salvo com sucesso');
   } catch (err) {
-    console.warn('[saveAccountUsageBatch] Erro ao salvar uso de contas:', err.message);
+    console.error('[saveAccountUsageBatch] ✗ Erro ao salvar uso de contas:', err.message, err.code);
+  }
+}
+
+async function incrementAccountUsageDaily(accountId, incrementBy = 1) {
+  if (!pool) return;
+  try {
+    await pool.query(
+      `INSERT INTO account_usage_daily (account_id, day, total)
+       VALUES ($1, CURRENT_DATE, $2)
+       ON CONFLICT (account_id, day) DO UPDATE SET total = account_usage_daily.total + $2`,
+      [accountId, incrementBy]
+    );
+  } catch (err) {
+    console.warn('[incrementAccountUsageDaily] Erro ao incrementar uso:', err.message);
+  }
+}
+
+async function updateValidationRunPartial(runId, partialData) {
+  if (!pool || !runId) return;
+  try {
+    const { totalProcessed, valid, invalid, formatErr, errorCount } = partialData;
+    await pool.query(
+      `UPDATE validation_runs SET total = $1, valid = $2, invalid = $3, format_err = $4, error_count = $5 WHERE id = $6`,
+      [totalProcessed, valid, invalid, formatErr, errorCount, runId]
+    );
+  } catch (err) {
+    console.warn('[updateValidationRunPartial] Erro:', err.message);
   }
 }
 
@@ -1089,12 +1133,14 @@ ipcMain.handle('get-cache-info', async () => {
 });
 
 // Pesquisa paginada no banco com filtros de número e status de WhatsApp
-handleIpc('search-cache', async (_event, query, filter, offset = 0, pageSize = 100) => {
+handleIpc('search-cache', async (_event, query, filter, offset = 0, pageSize = 100, dateFrom = null, dateTo = null) => {
   if (!pool) return { rows: [], total: 0, error: 'Banco não conectado.' };
   try {
     const q      = String(query || '').replace(/\D/g, '');
     const params = [];
     let where    = '1=1';
+    const from = typeof dateFrom === 'string' ? dateFrom.trim() : '';
+    const to   = typeof dateTo === 'string' ? dateTo.trim() : '';
 
     if (q) {
       params.push(`%${q}%`);
@@ -1102,6 +1148,13 @@ handleIpc('search-cache', async (_event, query, filter, offset = 0, pageSize = 1
     }
     if (filter === 'true')  where += ' AND has_wa = true';
     if (filter === 'false') where += ' AND has_wa = false';
+
+    if (from && to) {
+      params.push(from);
+      where += ` AND checked_at::date >= $${params.length}::date`;
+      params.push(to);
+      where += ` AND checked_at::date <= $${params.length}::date`;
+    }
 
     const countRes = await pool.query(
       `SELECT COUNT(*) AS total FROM phone_cache WHERE ${where}`,
@@ -1216,7 +1269,37 @@ handleIpc('start-validation', async (_event, payload) => {
 
     cancelRequested = false;
     const runStartedAt = Date.now();
-    const acctSnapshotBefore = new Map([...accountStats.entries()].map(([id, s]) => [id, s.total]));
+    
+    for (const [id, acc] of accounts.entries()) {
+      if (!accountStats.has(id)) {
+        accountStats.set(id, { total: 0, history: [] });
+      }
+    }
+    
+    console.log('[start-validation] Iniciando - accountStats.size=%d contas', accountStats.size);
+    for (const [id, s] of accountStats.entries()) {
+      console.log('[start-validation]   Conta %s: %d lookups antes da validacao', id, s.total);
+    }
+    let currentRunId = null;
+    if (pool) {
+      try {
+        const insertResult = await pool.query(
+          `INSERT INTO validation_runs (files, total, valid, invalid, format_err, error_count, duration_ms, created_at)
+           VALUES ($1, 0, 0, 0, 0, 0, 0, $2)
+           RETURNING id`,
+          [normalizedInputPaths.map(p => path.basename(p)).join(', '), nowBRT()]
+        );
+        if (insertResult.rows.length > 0) {
+          currentRunId = insertResult.rows[0].id;
+          console.log('[start-validation] Run criada com ID=%d', currentRunId);
+        }
+      } catch (err) {
+        console.warn('[start-validation] Erro ao criar run:', err.message);
+      }
+    }
+
+    let lastFlushTime = Date.now();
+    const FLUSH_INTERVAL_MS = 5000;
 
     if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
     let resolvedOutputDir = (payloadOutputDir && fs.existsSync(payloadOutputDir) && isSafeFilePath(payloadOutputDir))
@@ -1358,6 +1441,18 @@ handleIpc('start-validation', async (_event, payload) => {
             await flushPendingRows(writeState, writers, columnMapping);
             globalCurrent++;
 
+            const now = Date.now();
+            if (currentRunId && now - lastFlushTime >= FLUSH_INTERVAL_MS) {
+              lastFlushTime = now;
+              await updateValidationRunPartial(currentRunId, {
+                totalProcessed: globalCurrent,
+                valid: totalValid + writeState.validCount,
+                invalid: totalInvalid + writeState.invalidCount,
+                formatErr: totalFormat + writeState.formatCount,
+                errorCount: totalError + writeState.errorCount
+              });
+            }
+
             mainWindow?.webContents.send('validation-progress', {
               current: globalCurrent,
               total: globalTotal,
@@ -1454,21 +1549,18 @@ handleIpc('start-validation', async (_event, payload) => {
     const zipOut = path.join(resolvedOutputDir, zipName);
     await createZip(zipOut, allZipFiles);
 
-    const runAcctCounts = new Map();
-    for (const [id, s] of accountStats.entries()) {
-      const delta = s.total - (acctSnapshotBefore.get(id) ?? 0);
-      if (delta > 0) runAcctCounts.set(id, delta);
+    console.log('[start-validation] Finalizando - totalValid=%d, totalInvalid=%d, totalFormat=%d, totalError=%d', totalValid, totalInvalid, totalFormat, totalError);
+    
+    if (currentRunId) {
+      await updateValidationRunPartial(currentRunId, {
+        totalProcessed: globalCurrent,
+        valid: totalValid,
+        invalid: totalInvalid,
+        formatErr: totalFormat,
+        errorCount: totalError
+      });
+      console.log('[start-validation] Run finalizada com sucesso');
     }
-    await saveValidationRun({
-      files:      normalizedInputPaths.map(p => path.basename(p)).join(', '),
-      total:      globalTotal,
-      valid:      totalValid,
-      invalid:    totalInvalid,
-      formatErr:  totalFormat,
-      errorCount: totalError,
-      durationMs: Date.now() - runStartedAt
-    });
-    await saveAccountUsageBatch(runAcctCounts);
 
     return { ok: true, zipOut, total: globalTotal, valid: totalValid };
   } catch (err) {
@@ -1522,33 +1614,48 @@ ipcMain.on('win-close', (e) => BrowserWindow.fromWebContents(e.sender)?.close())
 ipcMain.handle('get-app-version', () => app.getVersion());
 
 // Retorna estatísticas persistentes de runs, por conta e por dia
-ipcMain.handle('get-dashboard-stats', async () => {
+ipcMain.handle('get-dashboard-stats', async (_event, dateFrom, dateTo) => {
   const result = { ok: true, runs: [], totals: null, accountStats: [], dailyStats: [] };
   if (!pool) return result;
   try {
+    const whereClause = dateFrom && dateTo
+      ? `WHERE created_at >= $1 AND created_at < ($2::date + INTERVAL '1 day')`
+      : '';
+    const params = dateFrom && dateTo ? [dateFrom, dateTo] : [];
+    let paramIndex = params.length;
+
     const { rows: runs } = await pool.query(
       `SELECT files, total, valid, invalid, format_err, error_count, duration_ms,
               TO_CHAR(created_at, 'DD/MM/YYYY HH24:MI') AS created_at
-       FROM validation_runs ORDER BY created_at DESC LIMIT 50`
+       FROM validation_runs ${whereClause} ORDER BY created_at DESC LIMIT 50`,
+      params
     );
     result.runs = runs;
 
     const { rows: [totals] } = await pool.query(
-      `SELECT COALESCE(SUM(total),0)::int       AS total,
-              COALESCE(SUM(valid),0)::int        AS valid,
-              COALESCE(SUM(invalid),0)::int      AS invalid,
-              COALESCE(SUM(error_count),0)::int  AS error_count
-       FROM validation_runs`
+      `SELECT COUNT(*)::int AS total,
+              COALESCE(SUM(CASE WHEN has_wa THEN 1 ELSE 0 END), 0)::int AS valid,
+              COALESCE(SUM(CASE WHEN NOT has_wa THEN 1 ELSE 0 END), 0)::int AS invalid,
+              0::int AS error_count
+       FROM phone_cache
+       ${dateFrom && dateTo ? `WHERE DATE(checked_at) >= $1 AND DATE(checked_at) <= $2` : ''}`,
+      params
     );
     result.totals = totals;
+
+    const acctWhereClause = dateFrom && dateTo
+      ? `WHERE day >= $1 AND day <= $2`
+      : `WHERE day >= CURRENT_DATE - INTERVAL '30 days'`;
+    const acctParams = dateFrom && dateTo ? [dateFrom, dateTo] : [];
 
     const { rows: accts } = await pool.query(
       `SELECT account_id,
               SUM(total)::int AS total,
               SUM(CASE WHEN day = CURRENT_DATE THEN total ELSE 0 END)::int AS today
        FROM account_usage_daily
-       WHERE day >= CURRENT_DATE - INTERVAL '30 days'
-       GROUP BY account_id ORDER BY total DESC`
+       ${acctWhereClause}
+       GROUP BY account_id ORDER BY total DESC`,
+      acctParams
     );
     result.accountStats = accts.map(a => ({
       ...a,
@@ -1557,12 +1664,20 @@ ipcMain.handle('get-dashboard-stats', async () => {
             a.account_id
     }));
 
+    const dailyWhereClause = dateFrom && dateTo
+      ? `WHERE DATE(checked_at) >= $1 AND DATE(checked_at) <= $2`
+      : '';
+    const dailyParams = dateFrom && dateTo ? [dateFrom, dateTo] : [];
+
     const { rows: dailyStats } = await pool.query(
       `SELECT DATE(checked_at)::text AS day,
               COUNT(*)::int AS total,
               SUM(CASE WHEN has_wa     THEN 1 ELSE 0 END)::int AS valid,
               SUM(CASE WHEN NOT has_wa THEN 1 ELSE 0 END)::int AS invalid
-       FROM phone_cache GROUP BY 1 ORDER BY 1 DESC LIMIT 30`
+       FROM phone_cache
+       ${dailyWhereClause}
+       GROUP BY 1 ORDER BY 1 DESC LIMIT 30`,
+      dailyParams
     );
     result.dailyStats = dailyStats;
   } catch (err) {

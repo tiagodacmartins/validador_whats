@@ -44,8 +44,8 @@ contextBridge.exposeInMainWorld('waApp', {
   /** Retorna o total de registros no banco. */
   getCacheInfo: () => ipcRenderer.invoke('get-cache-info'),
   /** Pesquisa paginada no banco com filtro de número e status. */
-  searchCache: (query, filter, offset = 0, pageSize = 500) =>
-    ipcRenderer.invoke('search-cache', query, filter, offset, pageSize),
+  searchCache: (query, filter, offset = 0, pageSize = 500, dateFrom = null, dateTo = null) =>
+    ipcRenderer.invoke('search-cache', query, filter, offset, pageSize, dateFrom, dateTo),
   /** Reconsulta um número no WhatsApp e atualiza o banco. */
   revalidatePhone: (phone) => ipcRenderer.invoke('revalidate-phone', phone),
 
@@ -95,5 +95,5 @@ contextBridge.exposeInMainWorld('waApp', {
 
   // ── Dashboard ────────────────────────────────────────────────
   /** Retorna estatísticas por conta e totais diários do banco. */
-  getDashboardStats: () => ipcRenderer.invoke('get-dashboard-stats')
+  getDashboardStats: (dateFrom, dateTo) => ipcRenderer.invoke('get-dashboard-stats', dateFrom, dateTo),
 });
