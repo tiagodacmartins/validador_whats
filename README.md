@@ -21,7 +21,7 @@ Aplicativo desktop para validar numeros de telefone no WhatsApp em lote.
 
 ## Opcao 1: Download do zip x64
 
-Baixe através desse link: https://github.com/tiagodacmartins/validador_whats/releases/tag/v1.2.3 ou
+Baixe através desse link: https://github.com/tiagodacmartins/validador_whats/releases ou
 do lado direito em "Releases"
 
 ### Opcao 2: Clonando o repositorio
