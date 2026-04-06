@@ -1,4 +1,4 @@
-# Validador WhatsApp GUI
+# Validador WhatsApp
 
 Aplicativo desktop para validar numeros de telefone no WhatsApp em lote.
 
