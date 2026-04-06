@@ -19,7 +19,12 @@ Aplicativo desktop para validar numeros de telefone no WhatsApp em lote.
 
 ## Como rodar
 
-### Opcao 1: Clonando o repositorio
+## Opcao 1: Download do zip x64
+
+Baixe através desse link: https://github.com/tiagodacmartins/validador_whats/releases/tag/v1.2.3 ou
+do lado direito em "Releases"
+
+### Opcao 2: Clonando o repositorio
 
 1. Clone o projeto:
 
@@ -40,7 +45,7 @@ npm install
 npm start
 ```
 
-### Opcao 2: Baixando o ZIP do repositorio
+### Opcao 3: Baixando o ZIP do repositorio
 
 1. No GitHub, clique em Code > Download ZIP.
 2. Extraia o ZIP para uma pasta local.
