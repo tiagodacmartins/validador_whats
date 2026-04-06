@@ -1782,6 +1782,7 @@ ipcMain.handle('get-dashboard-stats', async (_event, dateFrom, dateTo) => {
     const uniqueConnectedPhones = [...new Set(connectedPhones)];
 
     const mergedAccountStats = new Map();
+    const pendingMigrations = [];
     for (const entry of accts) {
       const rawKey = String(entry.account_id || '');
       const livePhoneFromId = rawKey.startsWith('account-')
@@ -1797,7 +1798,7 @@ ipcMain.handle('get-dashboard-stats', async (_event, dateFrom, dateTo) => {
       const resolvedKey = resolvedPhone || rawKey;
 
       if (resolvedPhone && rawKey !== resolvedPhone) {
-        await migrateAccountUsageKey(rawKey, resolvedPhone);
+        pendingMigrations.push({ rawKey, resolvedPhone });
       }
 
       const current = mergedAccountStats.get(resolvedKey) || { account_phone: resolvedKey, total: 0, today: 0 };
@@ -1809,6 +1810,12 @@ ipcMain.handle('get-dashboard-stats', async (_event, dateFrom, dateTo) => {
     result.accountStats = [...mergedAccountStats.values()]
       .filter(a => /^\d{12,13}$/.test(a.account_phone))
       .sort((a, b) => b.total - a.total);
+
+    if (pendingMigrations.length) {
+      Promise.allSettled(
+        pendingMigrations.map(({ rawKey, resolvedPhone }) => migrateAccountUsageKey(rawKey, resolvedPhone))
+      ).catch(() => {});
+    }
 
     const dailyWhereClause = dateFrom && dateTo
       ? `WHERE DATE(checked_at) >= $1 AND DATE(checked_at) <= $2`

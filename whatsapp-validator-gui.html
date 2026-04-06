@@ -1521,6 +1521,12 @@
     function pct(n, total) {
       return total ? (n / total * 100).toFixed(1) + '%' : '—';
     }
+    function formatAccountPhone(accountPhone) {
+      const digits = String(accountPhone || '').replace(/\D/g, '');
+      return digits.startsWith('55') && (digits.length === 12 || digits.length === 13)
+        ? '+' + digits
+        : String(accountPhone || '—');
+    }
     function fmtQtyPct(n, total) {
       const qty = Number(n).toLocaleString('pt-BR');
       const percentage = pct(n, total);
@@ -1580,10 +1586,7 @@
         acctTbody.innerHTML = '';
         for (const a of stats.accountStats) {
           const tr = document.createElement('tr');
-          const digits = String(a.account_phone || '').replace(/\D/g, '');
-          const formattedPhone = digits.startsWith('55') && (digits.length === 12 || digits.length === 13)
-            ? '+' + digits
-            : String(a.account_phone || '—');
+          const formattedPhone = formatAccountPhone(a.account_phone);
           tr.innerHTML = `<td>${escapeHtml(formattedPhone)}</td><td>${Number(a.total).toLocaleString('pt-BR')}</td><td>${Number(a.today).toLocaleString('pt-BR')}</td>`;
           acctTbody.appendChild(tr);
         }
@@ -1656,11 +1659,7 @@
       lines.push(row('POR NUMERO'));
       lines.push(row('Numero', 'Total no Periodo', 'Hoje'));
       for (const a of dashLastStats.accountStats) {
-        const digits = String(a.account_phone || '').replace(/\D/g, '');
-        const formattedPhone = digits.startsWith('55') && (digits.length === 12 || digits.length === 13)
-          ? '+' + digits
-          : String(a.account_phone || '');
-        lines.push(row(formattedPhone, a.total, a.today));
+        lines.push(row(formatAccountPhone(a.account_phone), a.total, a.today));
       }
       if (!dashLastStats.accountStats.length) lines.push(row('Sem registros no periodo'));
       lines.push(row(''));
