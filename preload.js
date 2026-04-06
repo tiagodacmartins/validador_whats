@@ -8,7 +8,7 @@
 
 'use strict';
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('waApp', {
 
@@ -23,6 +23,17 @@ contextBridge.exposeInMainWorld('waApp', {
   getFileInfo: (filePaths) => ipcRenderer.invoke('get-file-info', filePaths),
   /** Lê a primeira linha de um arquivo e retorna as colunas detectadas (separadas por `;`). */
   getFileColumns: (filePath) => ipcRenderer.invoke('get-file-columns', filePath),
+  /** Resolve caminhos absolutos de arquivos arrastados para a drop zone. */
+  getDroppedFilePaths: (files) => {
+    const list = Array.isArray(files) ? files : Array.from(files || []);
+    return list.map(file => {
+      try {
+        return webUtils.getPathForFile(file) || '';
+      } catch {
+        return file?.path || '';
+      }
+    }).filter(Boolean);
+  },
 
   // ── Validação em lote ────────────────────────────────────────
   /** Inicia a validação conforme o payload de configuração. */

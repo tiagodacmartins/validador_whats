@@ -169,6 +169,70 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+/**
+ * Tenta obter a foto de perfil de uma conta com estrategias de fallback.
+ * Algumas sessoes retornam erro na primeira chamada logo apos o estado "ready".
+ */
+async function resolveProfilePicUrl(client, info) {
+  const candidates = [
+    info?.wid?._serialized,
+    client?.info?.wid?._serialized,
+    info?.wid?.user ? `${info.wid.user}@c.us` : null,
+    client?.info?.wid?.user ? `${client.info.wid.user}@c.us` : null
+  ].filter(Boolean);
+
+  for (const wid of candidates) {
+    try {
+      const contact = await client.getContactById(wid);
+      if (contact?.profilePicUrl) return contact.profilePicUrl;
+      if (typeof contact?.getProfilePicUrl === 'function') {
+        const urlFromContact = await contact.getProfilePicUrl();
+        if (urlFromContact) return urlFromContact;
+      }
+      const thumbUrl = contact?.profilePicThumbObj?.imgFull
+        || contact?.profilePicThumbObj?.img
+        || contact?.profilePicThumbObj?.eurl
+        || null;
+      if (thumbUrl) return thumbUrl;
+    } catch {
+      // tenta fallback via API direta
+    }
+
+    try {
+      const url = await client.getProfilePicUrl(wid);
+      if (url) return url;
+    } catch {
+      // tenta proximo candidato
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Reprocessa a foto de perfil com retry em segundo plano e notifica o frontend.
+ */
+async function ensureAccountProfilePic(id, maxAttempts = 4, retryDelayMs = 2500) {
+  const acc = accounts.get(id);
+  if (!acc?.client || !acc.isReady || acc.profilePicUrl) return;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const url = await resolveProfilePicUrl(acc.client, acc.info);
+      if (url) {
+        acc.profilePicUrl = url;
+        broadcastAccountUpdate();
+        broadcastWaStatus({ type: 'ready', message: `Conta ${id}: foto de perfil carregada.` });
+        return;
+      }
+    } catch {
+      // continua tentando
+    }
+
+    if (attempt < maxAttempts) await sleep(retryDelayMs);
+  }
+}
+
 /** Retorna um número inteiro aleatório no intervalo [min, max]. */
 function randBetween(min, max) {
   const a = Number(min) || 0;
@@ -304,6 +368,8 @@ async function startAccount(id) {
   };
   accounts.set(id, acc);
   saveAccountIds();
+  // Atualiza a UI imediatamente com status "connecting".
+  broadcastAccountUpdate();
 
   const sessionPath = path.join(app.getPath('userData'), 'wwebjs-session-' + id);
   const edgePath    = fs.existsSync(EDGE_PATH_X86) ? EDGE_PATH_X86 : EDGE_PATH_X64;
@@ -349,13 +415,22 @@ async function startAccount(id) {
     acc.isReady = true;
     acc.status  = 'ready';
     acc.info    = acc.client.info;
+    const usageKey = getAccountUsageKey(id);
+    if (usageKey !== id) {
+      migrateAccountUsageKey(id, usageKey).catch(() => {});
+    }
     try {
-      acc.profilePicUrl = await acc.client.getProfilePicUrl(acc.info?.wid?._serialized);
+      acc.profilePicUrl = await resolveProfilePicUrl(acc.client, acc.info);
     } catch {
       acc.profilePicUrl = null;
     }
     broadcastAccountUpdate();
     broadcastWaStatus({ type: 'ready', message: `Conta ${id}: conectada e pronta.` });
+
+    // Retry assincrono para cobrir casos em que a foto ainda nao estava disponivel no "ready".
+    if (!acc.profilePicUrl) {
+      ensureAccountProfilePic(id).catch(() => {});
+    }
   });
 
   // Conta desconectada (logout, erro de rede ou celular offline)
@@ -672,12 +747,13 @@ async function saveAccountUsageBatch(runAcctCounts) {
   try {
     console.log('[saveAccountUsageBatch] Salvando uso de %d contas', runAcctCounts.size);
     for (const [accountId, count] of runAcctCounts.entries()) {
-      console.log('[saveAccountUsageBatch]   Conta %s: %d lookups', accountId, count);
+      const usageKey = getAccountUsageKey(accountId);
+      console.log('[saveAccountUsageBatch]   Conta %s (%s): %d lookups', accountId, usageKey, count);
       await pool.query(
         `INSERT INTO account_usage_daily (account_id, day, total)
          VALUES ($1, CURRENT_DATE, $2)
          ON CONFLICT (account_id, day) DO UPDATE SET total = account_usage_daily.total + $2`,
-        [accountId, count]
+        [usageKey, count]
       );
     }
     console.log('[saveAccountUsageBatch] ✓ Uso de contas salvo com sucesso');
@@ -686,14 +762,51 @@ async function saveAccountUsageBatch(runAcctCounts) {
   }
 }
 
+/**
+ * Retorna a chave de uso para dashboard.
+ * Preferimos o numero do WhatsApp para manter continuidade mesmo apos reconexao.
+ */
+function getAccountUsageKey(accountId) {
+  const acc = accounts.get(accountId);
+  const phone = String(acc?.info?.wid?.user || '').replace(/\D/g, '');
+  return phone || accountId;
+}
+
+/**
+ * Migra registros legados de uso salvos por account-id para a chave por telefone.
+ */
+async function migrateAccountUsageKey(accountId, usageKey) {
+  if (!pool) return;
+  if (!accountId || !usageKey || accountId === usageKey) return;
+
+  try {
+    await pool.query('BEGIN');
+    await pool.query(
+      `INSERT INTO account_usage_daily (account_id, day, total)
+       SELECT $2, day, total
+       FROM account_usage_daily
+       WHERE account_id = $1
+       ON CONFLICT (account_id, day)
+       DO UPDATE SET total = account_usage_daily.total + EXCLUDED.total`,
+      [accountId, usageKey]
+    );
+    await pool.query('DELETE FROM account_usage_daily WHERE account_id = $1', [accountId]);
+    await pool.query('COMMIT');
+  } catch (err) {
+    try { await pool.query('ROLLBACK'); } catch {}
+    console.warn('[migrateAccountUsageKey] Erro ao migrar chave de uso:', err.message);
+  }
+}
+
 async function incrementAccountUsageDaily(accountId, incrementBy = 1) {
   if (!pool) return;
   try {
+    const usageKey = getAccountUsageKey(accountId);
     await pool.query(
       `INSERT INTO account_usage_daily (account_id, day, total)
        VALUES ($1, CURRENT_DATE, $2)
        ON CONFLICT (account_id, day) DO UPDATE SET total = account_usage_daily.total + $2`,
-      [accountId, incrementBy]
+      [usageKey, incrementBy]
     );
   } catch (err) {
     console.warn('[incrementAccountUsageDaily] Erro ao incrementar uso:', err.message);
@@ -1657,12 +1770,45 @@ ipcMain.handle('get-dashboard-stats', async (_event, dateFrom, dateTo) => {
        GROUP BY account_id ORDER BY total DESC`,
       acctParams
     );
-    result.accountStats = accts.map(a => ({
-      ...a,
-      name: accounts.get(a.account_id)?.info?.pushname ||
-            accounts.get(a.account_id)?.info?.wid?.user ||
-            a.account_id
-    }));
+
+    const knownPhoneKeysFromData = [...new Set(
+      accts
+        .map(a => String(a.account_id || ''))
+        .filter(v => /^\d{12,13}$/.test(v))
+    )];
+    const connectedPhones = [...accounts.values()]
+      .map(a => String(a?.info?.wid?.user || '').replace(/\D/g, ''))
+      .filter(p => /^\d{12,13}$/.test(p));
+    const uniqueConnectedPhones = [...new Set(connectedPhones)];
+
+    const mergedAccountStats = new Map();
+    for (const entry of accts) {
+      const rawKey = String(entry.account_id || '');
+      const livePhoneFromId = rawKey.startsWith('account-')
+        ? String(accounts.get(rawKey)?.info?.wid?.user || '').replace(/\D/g, '')
+        : '';
+      const fallbackSinglePhone = (!livePhoneFromId && rawKey.startsWith('account-') && uniqueConnectedPhones.length === 1)
+        ? uniqueConnectedPhones[0]
+        : '';
+      const fallbackSingleKnownPhone = (!livePhoneFromId && !fallbackSinglePhone && rawKey.startsWith('account-') && knownPhoneKeysFromData.length === 1)
+        ? knownPhoneKeysFromData[0]
+        : '';
+      const resolvedPhone = livePhoneFromId || fallbackSinglePhone || fallbackSingleKnownPhone;
+      const resolvedKey = resolvedPhone || rawKey;
+
+      if (resolvedPhone && rawKey !== resolvedPhone) {
+        await migrateAccountUsageKey(rawKey, resolvedPhone);
+      }
+
+      const current = mergedAccountStats.get(resolvedKey) || { account_phone: resolvedKey, total: 0, today: 0 };
+      current.total += Number(entry.total || 0);
+      current.today += Number(entry.today || 0);
+      mergedAccountStats.set(resolvedKey, current);
+    }
+
+    result.accountStats = [...mergedAccountStats.values()]
+      .filter(a => /^\d{12,13}$/.test(a.account_phone))
+      .sort((a, b) => b.total - a.total);
 
     const dailyWhereClause = dateFrom && dateTo
       ? `WHERE DATE(checked_at) >= $1 AND DATE(checked_at) <= $2`

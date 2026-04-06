@@ -813,7 +813,7 @@
         <div class="stat"><label>Erros</label><strong id="dsErrorPct" style="color:#808000;">—</strong></div>
       </div>
 
-      <!-- Histórico de runs + por conta -->
+      <!-- Histórico de runs + por número -->
       <div style="display:flex;gap:6px;margin-bottom:6px;align-items:flex-start;">
         <div class="card" style="flex:3;overflow:hidden;min-width:0;">
           <h2>Histórico de Validações</h2>
@@ -828,11 +828,11 @@
           </div>
         </div>
         <div class="card" style="flex:1;overflow:hidden;min-width:0;">
-          <h2>Por Conta</h2>
+          <h2>Por Numero</h2>
           <div class="table-wrap">
             <table>
               <thead><tr>
-                <th>Conta</th><th>Total (30d)</th><th>Hoje</th>
+                <th>Numero</th><th>Total (30d)</th><th>Hoje</th>
               </tr></thead>
               <tbody id="dashAcctTbody"><tr><td colspan="4" style="color:#808080;text-align:center;">Sem dados.</td></tr></tbody>
             </table>
@@ -1241,12 +1241,15 @@
     });
 
     const dropZone = document.getElementById('dropZone');
+    // Evita que o navegador interno tente abrir o arquivo ao soltar fora da drop zone.
+    window.addEventListener('dragover', e => e.preventDefault());
+    window.addEventListener('drop', e => e.preventDefault());
     dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drop-active'); });
     dropZone.addEventListener('dragleave', e => { if (!dropZone.contains(e.relatedTarget)) dropZone.classList.remove('drop-active'); });
     dropZone.addEventListener('drop', async e => {
       e.preventDefault();
       dropZone.classList.remove('drop-active');
-      const droppedPaths = Array.from(e.dataTransfer.files).map(f => f.path).filter(Boolean);
+      const droppedPaths = window.waApp.getDroppedFilePaths(Array.from(e.dataTransfer?.files || []));
       if (!droppedPaths.length) return;
       const infos = await window.waApp.getFileInfo(droppedPaths);
       for (const f of (infos || [])) {
@@ -1569,7 +1572,7 @@
         }
       }
 
-      // ── Por conta ─────────────────────────────────────────────────────────────
+      // ── Por número ────────────────────────────────────────────────────────────
       const acctTbody = document.getElementById('dashAcctTbody');
       if (!stats.accountStats.length) {
         acctTbody.innerHTML = '<tr><td colspan="3" style="color:#808080;text-align:center;">Sem dados.</td></tr>';
@@ -1577,10 +1580,11 @@
         acctTbody.innerHTML = '';
         for (const a of stats.accountStats) {
           const tr = document.createElement('tr');
-          const label = a.name !== a.account_id
-            ? `${escapeHtml(a.name)}<br><span style="font-size:10px;color:#808080;">${escapeHtml(a.account_id)}</span>`
-            : escapeHtml(a.account_id);
-          tr.innerHTML = `<td>${label}</td><td>${Number(a.total).toLocaleString('pt-BR')}</td><td>${Number(a.today).toLocaleString('pt-BR')}</td>`;
+          const digits = String(a.account_phone || '').replace(/\D/g, '');
+          const formattedPhone = digits.startsWith('55') && (digits.length === 12 || digits.length === 13)
+            ? '+' + digits
+            : String(a.account_phone || '—');
+          tr.innerHTML = `<td>${escapeHtml(formattedPhone)}</td><td>${Number(a.total).toLocaleString('pt-BR')}</td><td>${Number(a.today).toLocaleString('pt-BR')}</td>`;
           acctTbody.appendChild(tr);
         }
       }
@@ -1648,11 +1652,15 @@
       if (!dashLastStats.runs.length) lines.push(row('Sem registros no periodo'));
       lines.push(row(''));
 
-      // ── Seção 3: Por conta ────────────────────────────────────────────────
-      lines.push(row('POR CONTA'));
-      lines.push(row('Conta', 'Nome', 'Total no Periodo', 'Hoje'));
+      // ── Seção 3: Por número ───────────────────────────────────────────────
+      lines.push(row('POR NUMERO'));
+      lines.push(row('Numero', 'Total no Periodo', 'Hoje'));
       for (const a of dashLastStats.accountStats) {
-        lines.push(row(a.account_id, a.name !== a.account_id ? a.name : '', a.total, a.today));
+        const digits = String(a.account_phone || '').replace(/\D/g, '');
+        const formattedPhone = digits.startsWith('55') && (digits.length === 12 || digits.length === 13)
+          ? '+' + digits
+          : String(a.account_phone || '');
+        lines.push(row(formattedPhone, a.total, a.today));
       }
       if (!dashLastStats.accountStats.length) lines.push(row('Sem registros no periodo'));
       lines.push(row(''));
@@ -1935,13 +1943,23 @@
         // Avatar
         const avatarWrap = document.createElement('div');
         avatarWrap.style.cssText = 'position:relative;flex-shrink:0;';
+        const dotColor = acc.status === 'ready' ? '#22c55e' : acc.status === 'qr' || acc.status === 'authenticated' || acc.status === 'connecting' ? '#f59e0b' : '#aaa';
+        const dot = document.createElement('div');
+        dot.style.cssText = `position:absolute;bottom:2px;right:2px;width:14px;height:14px;border-radius:50%;background:${dotColor};border:2px solid var(--bg);`;
         if (acc.profilePicUrl) {
-          avatarWrap.innerHTML = `<img src="${escapeHtml(acc.profilePicUrl)}" style="width:54px;height:54px;border-radius:50%;object-fit:cover;border:2px solid var(--border);" />`;
+          const img = document.createElement('img');
+          img.src = acc.profilePicUrl;
+          img.alt = 'Foto de perfil';
+          img.style.cssText = 'width:54px;height:54px;border-radius:50%;object-fit:cover;border:2px solid var(--border);';
+          img.addEventListener('error', () => {
+            avatarWrap.innerHTML = `<div style="width:54px;height:54px;border-radius:50%;background:linear-gradient(135deg,#d3e8e4,#c0d8d4);border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:24px;color:#8ab4af;">&#128100;</div>`;
+            avatarWrap.appendChild(dot);
+          }, { once: true });
+          avatarWrap.appendChild(img);
         } else {
           avatarWrap.innerHTML = `<div style="width:54px;height:54px;border-radius:50%;background:linear-gradient(135deg,#d3e8e4,#c0d8d4);border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:24px;color:#8ab4af;">&#128100;</div>`;
         }
-        const dotColor = acc.status === 'ready' ? '#22c55e' : acc.status === 'qr' || acc.status === 'authenticated' || acc.status === 'connecting' ? '#f59e0b' : '#aaa';
-        avatarWrap.innerHTML += `<div style="position:absolute;bottom:2px;right:2px;width:14px;height:14px;border-radius:50%;background:${dotColor};border:2px solid var(--bg);"></div>`;
+        avatarWrap.appendChild(dot);
         card.appendChild(avatarWrap);
 
         // Info
@@ -2015,16 +2033,22 @@
       const action = btn.dataset.action;
       const id = btn.dataset.id;
       btn.disabled = true;
-      if (action === 'connect') {
-        await window.waApp.connectWhatsApp(id);
-      } else if (action === 'disconnect') {
-        await window.waApp.disconnectWhatsApp(id);
-      } else if (action === 'remove') {
-        if (confirm(`Remover a conta "${id}"?`)) {
-          await window.waApp.removeAccount(id);
-        } else {
-          btn.disabled = false;
+      try {
+        if (action === 'connect') {
+          await window.waApp.connectWhatsApp(id);
+        } else if (action === 'disconnect') {
+          await window.waApp.disconnectWhatsApp(id);
+        } else if (action === 'remove') {
+          if (confirm(`Remover a conta "${id}"?`)) {
+            await window.waApp.removeAccount(id);
+          } else {
+            btn.disabled = false;
+            return;
+          }
         }
+      } finally {
+        // Garante refresh local imediato, mesmo se o evento push do main atrasar.
+        await waTabLoad();
       }
     });
 
