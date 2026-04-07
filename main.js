@@ -1476,8 +1476,6 @@ handleIpc('start-validation', async (_event, payload) => {
       const lineIterator = streamNonEmptyLines(inputPath, lineStart)[Symbol.asyncIterator]();
       let processedRealCount = fileIdx === startFileIndex ? processedInBatch : 0;
       let batchPausePromise = null;
-      // Delay global compartilhado entre todos os workers para garantir o intervalo configurado
-      let nextSlotAt = 0;
       const writeState = {
         nextWriteIndex: lineStart,
         processedCount: lineStart,
@@ -1494,6 +1492,8 @@ handleIpc('start-validation', async (_event, payload) => {
       };
 
       const runWorker = async () => {
+        // Delay local de cada worker — permite execução verdadeiramente paralela
+        let nextSlotAt = 0;
         await validationSemaphore.acquire();
         try {
           while (true) {
