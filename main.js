@@ -1492,8 +1492,9 @@ handleIpc('start-validation', async (_event, payload) => {
       };
 
       const runWorker = async () => {
-        // Delay local de cada worker — permite execução verdadeiramente paralela
-        let nextSlotAt = 0;
+          // Delay local de cada worker — permite execução verdadeiramente paralela
+          // Cada worker agendará seu próprio delay, respeitando independentemente a taxa configurada
+          let nextSlotAt = 0;
         await validationSemaphore.acquire();
         try {
           while (true) {
