@@ -120,4 +120,5 @@ dist/Validador-WhatsApp-win-x64.zip
 ## Licenca
 
 MIT
-Tiago da Conceição Martins
+
+Copyright (c) Tiago da Conceição Martins
